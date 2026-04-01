@@ -11,7 +11,7 @@
 # 2. 由外部 Cron-job B (XX:00) 敲擊 /ping 路由，觸發 run_integrated_mission。
 # 3. 任務執行完畢後，直接呼叫 Koyeb API 將自己強制 Pause (斷電)，達成 $0 元。
 # [修正] 拔除 BackgroundScheduler，完全交由外部驅動與自我毀滅。
-# [2026_0401] 觀察測試1個月，每5小時醒來1次
+# [2026_0401] 觀察測試1個月，每5小時醒來1次、 被喚醒後 time.sleep(random.uniform(125.0, 300.0))
 # ---------------------------------------------------------
 import os, time, gc, random, threading, requests
 from datetime import datetime, timezone
@@ -34,8 +34,8 @@ def get_sb():
     return create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY"))
 
 def db_jitter():
-    """🛡️ 隨機微延遲避震：防止多台機甲同時寫入造成資料庫 Lock"""
-    time.sleep(random.uniform(5.2, 20.0))
+    """🛡️ 隨機微延遲避震：防止多台機甲同時寫入造成資料庫 Lock，2026_0401加入更常延遲防下載被盯上"""
+    time.sleep(random.uniform(125.0, 300.0))
 
 def s_log(sb, task_type, status, message, err_stack=None):
     try:
