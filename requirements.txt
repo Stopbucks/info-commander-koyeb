@@ -1,0 +1,21 @@
+
+# -------------------------------------------------------------
+# --- S-Plan Fortress V5.6 全軍統一標準清單 ---
+# 適用對象：RENDER, KOYEB, ZEABUR, DBOS, FLY_LAX 
+# [升級] 1. 強制升級 supabase 與 postgrest，完美支援 nullsfirst 語法
+# [升級] 2. 確保 apscheduler 時區穩定，24/7 巡邏不中斷
+# [升級] 3. 補齊 groq 防爆切塊特種兵專用裝備
+# -------------------------------------------------------------
+flask
+gunicorn
+requests
+supabase>=2.4.0     # 🚀 強制升級：支援 nullsfirst=True
+postgrest>=0.16.4   # 🚀 強制升級：supabase 底層查詢引擎
+httpx>=0.27.2       # 🚀 與 Vercel 同步
+python-dotenv
+boto3
+feedparser
+apscheduler==3.10.4
+pytz
+imageio-ffmpeg      # 🚀 破局武裝：自帶底層 ffmpeg 引擎，免除 OS 設定
+groq                # 🛡️ B計畫專用：Groq 備援防爆模組(輕型套件)
