@@ -11,7 +11,7 @@
 # 2. 由外部 Cron-job B (XX:00) 敲擊 /ping 路由，觸發 run_integrated_mission。
 # 3. 任務執行完畢後，直接呼叫 Koyeb API 將自己強制 Pause (斷電)，達成 $0 元。
 # [修正] 拔除 BackgroundScheduler，完全交由外部驅動與自我毀滅。
-# [2026_0401] 觀察測試1個月，每5小時醒來1次、 被喚醒後 time.sleep(random.uniform(125.0, 300.0))
+# [2026_0401] 觀察測試1個月，每5小時醒來1次
 # ---------------------------------------------------------
 import os, time, gc, random, threading, requests
 from datetime import datetime, timezone
@@ -35,7 +35,7 @@ def get_sb():
 
 def db_jitter():
     """🛡️ 隨機微延遲避震：防止多台機甲同時寫入造成資料庫 Lock，2026_0401加入更常延遲防下載被盯上"""
-    time.sleep(random.uniform(125.0, 300.0))
+    time.sleep(random.uniform(0.2, 1.0))
 
 def s_log(sb, task_type, status, message, err_stack=None):
     try:
@@ -113,7 +113,7 @@ def run_integrated_mission():
     MISSION_STATE["start_time"] = time.time()
     
     try:
-        s_log(sb, "SYSTEM", "SUCCESS", f"🚀 [{CONFIG['WORKER_ID']} V5.7] 零成本刺客連線！準備執行單次突擊！")
+        s_log(sb, "SYSTEM", "SUCCESS", f"🚀 [{CONFIG['WORKER_ID']} V5.8] 零成本刺客連線！準備執行單次突擊！")
         
         # 執行核心狀態機 (裡面會自動判斷 Ticks 去做下載/摘要/轉譯)
         execute_fortress_stages(sb, CONFIG, s_log)
@@ -121,6 +121,9 @@ def run_integrated_mission():
     except Exception as e:
         report_soft_failure(sb, CONFIG["WORKER_ID"], str(e))
     finally:
+        # 💥 新增戰術：在拔除電源前，向 Supabase 戰情室發送最後的休眠日誌！
+        s_log(sb, "SYSTEM", "SUCCESS", f"🛑 [{CONFIG['WORKER_ID']}] 任務全數執行完畢，觸發 API 斷電休眠協議！")
+        
         MISSION_STATE["is_running"] = False
         if MISSION_LOCK.locked():
             try: MISSION_LOCK.release()
@@ -130,8 +133,6 @@ def run_integrated_mission():
         # 💥 關鍵行動：無論任務成功或失敗，最後一定要呼叫自毀！
         self_destruct_koyeb()
 
-@app.route('/')
-def health(): return f"Fortress {CONFIG['WORKER_ID']} V5.7 Assassin Active", 200
 
 @app.route('/ping')
 def trigger():
