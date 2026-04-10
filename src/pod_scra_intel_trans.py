@@ -1,5 +1,5 @@
 # ---------------------------------------------------------
-# 程式碼：src/pod_scra_intel_trans.py  ( KOYEB_變速箱_面板統御防崩潰版 V5.7)
+# 程式碼：src/pod_scra_intel_trans.py  ( KOYEB_變速箱_面板統御防崩潰版 V5.8)
 # [節拍] 狀態機邏輯：透過 MAX_TICKS 控制循環。若主將設為 3 拍，則依序執行 [1:下載, 2:摘要, 3:轉譯]。
 # [節拍] 判斷公式：利用除以 2 的餘數 (current_tick % 2 != 0) 來動態交替分配任務型態。
 # [節拍] 任務分配：單數拍 (1, 3, 5...) 執行轉譯 (STT)；雙數拍 (2, 4, 6...) 執行摘要 (Summary)。
@@ -16,7 +16,7 @@
 # 2. 將 max_ticks 交由 src.pod_scra_intel_control 面板動態管理，落實低耦合。
 # 3. [T2 敗戰轉移] 遭遇 403/401 封鎖時，自動將任務降級為 pending (冰封10天)並標記 T1_RESCUE。
 # 4. [黃金救援期] 推遲 troop2_start_at 7 天，完美錯開 T2 雷達，精準移交 T1 數位人格處理。
-# 5. 一次拿10個下載名單，抓取2個不同網域伺服器各1個，如果是相同，只抓一個檔案下載。
+# 5. 一次拿10個下載名單，2個不同網域伺服器各1個，如相同，只抓一檔案下載。修改50MB，相關Timeout180秒設定、0.5秒休息
 # ---------------------------------------------------------
 # [隱蔽] 導入 camouflage 千面人模組，透過身分旗標精準配發迷彩。
 # ---------------------------------------------------------
@@ -122,20 +122,29 @@ def run_logistics_engine(sb, config, now_iso, s_log_func, my_blacklist, dl_limit
         tmp_path = f"/tmp/dl_{m['id'][:8]}{ext}"
         
         try:
-            # 🎭 啟動千面人偽裝：🚀 將身分旗標往下傳遞
             dynamic_headers = get_camouflage_headers(worker_id, is_duty_officer)
             
-            with requests.get(f_url, stream=True, timeout=120, headers=dynamic_headers) as r:
+            # 💡 黃金比例：timeout=180s, 切片 3MB, 喘息 0.5s
+            with requests.get(f_url, stream=True, timeout=180, headers=dynamic_headers) as r:
                 r.raise_for_status()
                 with open(tmp_path, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=1024*1024): f.write(chunk)
+                    for chunk in r.iter_content(chunk_size=3 * 1024 * 1024): # 3MB 切片
+                        if chunk: # 確保有資料才寫入
+                            f.write(chunk)
+                            time.sleep(0.5) # 💡 極限擬人化：模擬 4G 網路真實緩衝降速
                     
             s3.upload_file(tmp_path, bucket, os.path.basename(tmp_path))
-            sb.table("mission_queue").update({"scrape_status": "completed", "r2_url": os.path.basename(tmp_path)}).eq("id", m['id']).execute()
-            s_log_func(sb, "DOWNLOAD", "SUCCESS", f"✅ 物資入庫: {m['id'][:8]}")
             
+            sb.table("mission_queue").update({
+                "scrape_status": "completed", 
+                "r2_url": os.path.basename(tmp_path)
+            }).eq("id", m['id']).execute()
+            
+            s_log_func(sb, "DOWNLOAD", "SUCCESS", f"✅ 物資入庫 (安全擴容至 50MB): {m['id'][:8]}")
+
             visited_domains.add(target_domain) 
             downloaded_count += 1              
+                 
             
         except requests.exceptions.HTTPError as he:
             status_code = he.response.status_code
