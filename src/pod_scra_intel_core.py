@@ -122,6 +122,11 @@ def run_audio_to_stt_mission(sb=None):
                     continue 
             elif not panel["CAN_COMPRESS"] and (r2_url.endswith('.mp3') or r2_url.endswith('.m4a')):
                 print(f"⛔ [{worker_id}] 權限不足：禁止執行壓縮。跳過此大檔案。")
+                
+                # 💡 戰術發報：只在這裡埋設單一觀測點
+                from src.pod_scra_intel_techcore import s_log_func
+                s_log_func(sb, "CORE_STT", "WARNING", f"⛔ 權限不足，跳過大怪獸 ({task.get('audio_size_mb')}MB) | Task: {task_id[:8]}")
+                
                 continue
 
             # 💡 手術二：壓縮完畢後，無論是誰 (兵工廠或重裝兵)，都強制收隊休息！
