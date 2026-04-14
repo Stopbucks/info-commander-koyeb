@@ -1,13 +1,14 @@
 # ---------------------------------------------------------
-# src/pod_scra_intel_core.py v5.7 (兵工廠與 Jitter 防踩踏版)
+# src/pod_scra_intel_core.py v5.7.1 (兵工廠與 Jitter 防踩踏版 - 全軍統一防線版)
 # 適用部隊：ALL (FLY, RENDER, KOYEB, ZEABUR, DBOS, HF)
 # 任務：專注於 STT 與 Summary 的核心戰鬥流程。
-# [新增] 1. COMPRESS_ONLY 兵工廠：壓縮完直接結案。若遇已壓縮檔則自動化身轉譯兵。
-# [新增] 2. 迴圈 Jitter 雜訊：在多檔案處理間加入隨機延遲，防止 API 封鎖與併發衝突。
-# [修改] RENDER 壓縮後，如果檔案低於25MB 把原本只能T1 部隊處理的檔案 ，也交付給 T2
+# [新增] 1. 物理級斷開：壓縮與轉譯嚴格分離，壓完即收隊，根除 OOM 崩潰。
+# [新增] 2. 邊界防禦：非 Opus 格式檔案嚴禁進入 Base64/API 轉譯區。
+# [新增] 3. 戰術發報：於攔截大怪物時，直連 Supabase 發射單一信號彈。
+# [新增] 4. 14MB 智能交接：中型機甲遇到大於 14MB 的 Opus，自動標記並移交重裝部隊 (HF/DBOS)。
 # ---------------------------------------------------------
-import os, time, random, gc, requests  # 💡 核心手術：補上 requests 模組！
-from datetime import datetime, timezone  # 💡 補上這一行，確保時間計算不會報錯
+import os, time, random, gc, traceback, requests 
+from datetime import datetime, timezone          
 from src.pod_scra_intel_control import get_tactical_panel, get_sb, get_secrets 
 from src.pod_scra_intel_r2 import compress_task_to_opus  
 from src.pod_scra_intel_groqcore import GroqFallbackAgent
@@ -25,7 +26,7 @@ def run_audio_to_stt_mission(sb=None):
     start_time = time.time()
     worker_id = os.environ.get("WORKER_ID", "UNKNOWN_NODE")
     
-    # 向指揮所申請專屬戰術面板
+    # 🚀 向指揮所申請專屬戰術面板
     panel = get_tactical_panel(worker_id)
     
     if panel["STT_LIMIT"] <= 0:
@@ -36,7 +37,7 @@ def run_audio_to_stt_mission(sb=None):
     if not sb: sb = get_sb()
     s = get_secrets()
     
-    print(f"🔍 [{worker_id}] 啟動 STT 雷達 (戰力: {panel['MEM_TIER']}MB | 掃描: {panel['RADAR_FETCH_LIMIT']}筆)...")
+    print(f"🔍 [{worker_id}] 啟動 STT 決策雷達 (戰力: {panel['MEM_TIER']}MB | 掃描: {panel['RADAR_FETCH_LIMIT']}筆)...")
     
     tasks = fetch_stt_tasks(sb, panel["MEM_TIER"], worker_id, fetch_limit=panel["RADAR_FETCH_LIMIT"])
     if not tasks: 
@@ -62,9 +63,16 @@ def run_audio_to_stt_mission(sb=None):
         task_id = task['id']
         r2_url = str(task.get('r2_url') or '').lower()
         
+        # 💡 [防禦升級 1] 遇到已經壓縮好，但大於 14MB 的 Opus，中型機甲不准碰！留給重裝部隊
+        current_size = task.get('audio_size_mb') or 0
+        if r2_url.endswith('.opus') and current_size > 14.0:
+            if worker_id not in ["HUGGINGFACE", "DBOS"]:
+                print(f"⛔ [{worker_id}] 偵測到 {current_size}MB 的超大 Opus，超越 Base64 極限，保留給重裝部隊！")
+                continue
+
         # 🔄 [動態兵工廠] 如果這台是專職壓縮，但遇到已經是 opus 的檔案，代表無檔可壓！自動放行往下轉譯
         if panel.get("COMPRESS_ONLY") and r2_url.endswith('.opus'):
-            print(f"🔄 [{worker_id}] 兵工廠產能閒置：自動轉職為【中型主力】支援 AI 轉譯！")
+            print(f"🔄 [{worker_id}] 兵工廠產能閒置：自動轉職為【主力兵】支援 AI 轉譯！")
 
         check = sb.table("mission_intel").select("intel_status").eq("task_id", task_id).execute()
         if check.data:
@@ -73,11 +81,25 @@ def run_audio_to_stt_mission(sb=None):
 
         print(f"🎯 [{worker_id}] 鎖定目標: {task.get('source_name')} (大小: {task.get('audio_size_mb')}MB)")
 
-
-
         try:
             # 💡 手術一：新增壓縮標記，落實「壓縮與轉譯」的物理級斷開
             is_compressed_now = False 
+
+            # 🛡️ 邊界防禦：如果是大於 50MB 的未壓縮檔，且此機甲無權壓縮，直接跳過防 OOM
+            if not panel["CAN_COMPRESS"] and (r2_url.endswith('.mp3') or r2_url.endswith('.m4a')):
+                print(f"⛔ [{worker_id}] 權限不足：禁止執行壓縮。跳過此大檔案。")
+                
+                # 📡 戰術發報：極簡直連模式 (寫入 pod_scra_log)
+                try:
+                    sb.table("pod_scra_log").insert({
+                        "worker_id": worker_id,
+                        "task_type": "CORE_STT",
+                        "status": "WARNING",
+                        "message": f"⛔ 權限不足，跳過大怪獸 ({task.get('audio_size_mb')}MB) | Task: {task_id[:8]}"
+                    }).execute()
+                except Exception:
+                    pass
+                continue
 
             # 根據面板權限決定是否壓縮
             if panel["CAN_COMPRESS"] and (r2_url.endswith('.mp3') or r2_url.endswith('.m4a')):
@@ -91,7 +113,6 @@ def run_audio_to_stt_mission(sb=None):
                     # 💡 核心偵測：取得壓縮後的檔案大小 (透過 requests)
                     compressed_size_mb = 5 # 預設安全值
                     try:
-                        s = get_secrets()
                         head_req = requests.head(f"{s['R2_URL']}/{new_url}", timeout=10)
                         if head_req.status_code == 200 and 'Content-Length' in head_req.headers:
                             compressed_size_mb = int(head_req.headers['Content-Length']) / (1024 * 1024)
@@ -116,18 +137,32 @@ def run_audio_to_stt_mission(sb=None):
                     sb.table("mission_queue").update(update_payload).eq("id", task_id).execute()
                     task['r2_url'] = new_url
                     
+                    # 💡 [防禦升級 2] 壓縮完畢後，如果體積大於 14MB，中型部隊立刻收隊，保留給重裝！
+                    if compressed_size_mb > 14.0 and worker_id not in ["HUGGINGFACE", "DBOS"]:
+                        msg = f"⚠️ 壓縮後仍達 {compressed_size_mb:.1f}MB！超越中型機甲極限，已入庫並移交重裝部隊！"
+                        print(f"[{worker_id}] {msg}")
+                        try:
+                            sb.table("pod_scra_log").insert({
+                                "worker_id": worker_id,
+                                "task_type": "CORE_STT",
+                                "status": "WARNING",
+                                "message": f"{msg} | Task: {task_id[:8]}"
+                            }).execute()
+                        except Exception:
+                            pass
+                        actual_processed += 1
+                        continue # 🚀 強制跳出，絕對不往下進入 API 呼叫！
+                    
+                    # 🏭 [兵工廠攔截] 壓縮完畢後，若為純壓縮職位，立即跳出結案
+                    if panel.get("COMPRESS_ONLY"):
+                        print(f"🏭 [{worker_id}] 兵工廠任務完成！檔案已入庫，交由輕裝部隊轉譯。")
+                        actual_processed += 1
+                        continue 
+                        
                 else:
                     print(f"❌ [{worker_id}] 壓縮失敗，觸發容錯推進！")
                     increment_soft_failure(sb, task_id)
                     continue 
-            elif not panel["CAN_COMPRESS"] and (r2_url.endswith('.mp3') or r2_url.endswith('.m4a')):
-                print(f"⛔ [{worker_id}] 權限不足：禁止執行壓縮。跳過此大檔案。")
-                
-                # 💡 戰術發報：只在這裡埋設單一觀測點
-                from src.pod_scra_intel_techcore import s_log_func
-                s_log_func(sb, "CORE_STT", "WARNING", f"⛔ 權限不足，跳過大怪獸 ({task.get('audio_size_mb')}MB) | Task: {task_id[:8]}")
-                
-                continue
 
             # 💡 手術二：壓縮完畢後，無論是誰 (兵工廠或重裝兵)，都強制收隊休息！
             if is_compressed_now:
@@ -143,7 +178,7 @@ def run_audio_to_stt_mission(sb=None):
             # ==========================================
             # ⚔️ 以下為 API 呼叫區塊 (保證只有輕量 Opus 能進入)
             # ==========================================
-            chosen_provider = "GROQ" if panel["SCOUT_MODE"] else "GEMINI"
+            chosen_provider = "GROQ" if panel.get("SCOUT_MODE") else "GEMINI"
 
             print(f"🎲 [{worker_id}] 戰術分流 -> [{chosen_provider}] (檔案已確認為輕量 Opus)")
             upsert_intel_status(sb, task_id, "Sum.-proc", chosen_provider)
@@ -170,7 +205,7 @@ def run_audio_to_stt_mission(sb=None):
                     sb.table("mission_queue").update({"r2_url": None, "scrape_status": "pending"}).eq("id", task_id).execute()
                 else:
                     increment_soft_failure(sb, task_id)
-        
+            
         finally:
             gc.collect()
 
