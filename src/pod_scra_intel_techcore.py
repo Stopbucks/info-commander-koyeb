@@ -50,13 +50,28 @@ def increment_soft_failure(sb, task_id):
     except Exception as e: 
         print(f"⚠️ 容錯推進紀錄失敗: {e}")
 
+
+
 # =========================================================
 # 📊 資料庫軍械庫 (Database Armory)
 # =========================================================
 def fetch_summary_tasks(sb, fetch_limit=50):
-    return sb.table("mission_intel").select("*, mission_queue(episode_title, source_name, r2_url)").eq("intel_status", "Sum.-pre").order("created_at").limit(fetch_limit).execute().data or []
+    import os # 確保 os 模組可用以獲取環境變數
+    worker_id = os.environ.get("WORKER_ID", "UNKNOWN")
+    
+    # 💡 擴充查詢：在 mission_queue 的關聯中加入 audio_size_mb 欄位以供後續過濾
+    query = sb.table("mission_intel").select("*, mission_queue(episode_title, source_name, r2_url, audio_size_mb)").eq("intel_status", "Sum.-pre")
+    
+    # 🚀 絕對物理防線：中/輕型機甲，在雷達階段徹底無視 14MB 以上的巨怪！
+    if worker_id not in ["HUGGINGFACE", "DBOS", "AUDIO_EAT", "RAILWAY"]:
+        # 透過外鍵關聯 (Foreign Key) 直接在資料庫底層進行數值過濾
+        query = query.lte("mission_queue.audio_size_mb", 14.0)
+
+    return query.order("created_at").limit(fetch_limit).execute().data or []
 
 def upsert_intel_status(sb, task_id, status, provider=None, stt_text=None):
+# -----(定位線)以上修改，下方 upsert_intel_status 等其餘程式碼維持原樣不動----
+
     payload = {"task_id": task_id, "intel_status": status}
     if provider: payload["ai_provider"] = provider
     if stt_text: payload["stt_text"] = stt_text
@@ -87,6 +102,7 @@ def parse_intel_metrics(text):
 # =========================================================
 # 🧠 AI 火控與通訊 (AI & Comms)
 # =========================================================
+
 def call_groq_stt(secrets, r2_url_path):
     url = f"{secrets['R2_URL']}/{r2_url_path}"
     m_type = "audio/ogg" if ".opus" in url else "audio/mpeg"
