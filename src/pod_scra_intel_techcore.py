@@ -70,7 +70,6 @@ def fetch_summary_tasks(sb, fetch_limit=50):
     return query.order("created_at").limit(fetch_limit).execute().data or []
 
 def upsert_intel_status(sb, task_id, status, provider=None, stt_text=None):
-# -----(定位線)以上修改，下方 upsert_intel_status 等其餘程式碼維持原樣不動----
 
     payload = {"task_id": task_id, "intel_status": status}
     if provider: payload["ai_provider"] = provider
