@@ -1,12 +1,13 @@
 # ---------------------------------------------------------
-# 程式碼：src/pod_scra_intel_techcore.py (V5.8 中/輕裝機甲 極速防護版)
-# 職責：1. [雷達] fetch_stt_tasks：依據 mem_tier 與 worker_id 進行動態三級分流。
+# src/pod_scra_intel_techcore.py v5.9.2 (中型部隊專用：大腦閘門與 TG 防彈版)
+# 職責：1. [雷達] fetch_stt_tasks：對接 Supabase 智能檢視表，進行三級分流。
 #       2. [容錯] increment_soft_failure：處理失敗不墜機，打上標記交接重裝。
-#       3. [火力] 封裝 Supabase 讀寫、手刻 REST API (Gemini/Groq) 呼叫。
-# [V5.7 修正] 1. FLY 游擊隊精準鎖定 .opus 檔案。
-# [V5.7 修正] 2. 容錯推進精準寫入 SQL NULL (None)。
-# [V5.7 修正] 3. Gemini 手刻 API 加裝 14MB 起飛前安檢與錯誤黑盒子。
-# 適用：FLY, RENDER, KOYEB, ZEABUR (不含 HF/DBOS)
+#       3. [火力] 封裝 Supabase 讀寫、REST API 呼叫與 TG 戰報。
+# 1. FLY 游擊隊精準鎖定 .opus 檔案。
+# 2. Gemini 手刻 API 加裝 14MB 起飛前安檢與錯誤黑盒子。
+# [V5.9.2 更新] 全面導入 vw_safe_mission_queue，雷達程式碼極簡化。
+# [V5.9.2 更新] 強化 send_tg_report：攔截 TG 崩潰錯誤，靜默紀錄保全主線。
+# 適用：RENDER, KOYEB, ZEABUR (純 REST 輕快版，無 SDK 依賴)
 # ---------------------------------------------------------
 import requests, base64, re, gc
 from datetime import datetime
@@ -15,21 +16,18 @@ from datetime import datetime
 # 📡 戰略雷達 (Strategic Radar)
 # =========================================================
 def fetch_stt_tasks(sb, mem_tier, worker_id="UNKNOWN", fetch_limit=50):
-    """【低耦合戰略閘道】依據軟失敗次數與檔案大小進行動態三級分流"""
-    query = sb.table("view_worker_task_inbox").select("*")
+    """【低耦合戰略閘道】依據 mem_tier 進行動態三級分流 (全域冷卻與過濾交由 VIEW 處理)"""
     
-    # ☠️ 毒藥天花板：全軍皆無視軟失敗 6 次(含)以上的絕對死檔
-    query = query.or_("soft_failure_count.lt.6,soft_failure_count.is.null")
+    # 🚀 戰略升級：直接讀取「智能冷卻檢視表」，自動享有防重複、軟失敗剔除與大檔冷卻裝甲
+    query = sb.table("vw_safe_mission_queue").select("*")
 
     if mem_tier < 512:
         # 🏹 輕裝游擊隊 (FLY): 安全第一
-        # 💡 雷達校準：精準鎖定 %.opus，接手兵工廠產出
-        query = query.or_("soft_failure_count.eq.0,soft_failure_count.is.null") \
-                     .gte("audio_size_mb", 0).ilike("r2_url", "%.opus").lt("audio_size_mb", 15) \
+        query = query.gte("audio_size_mb", 0).ilike("r2_url", "%.opus").lt("audio_size_mb", 15) \
                      .order("audio_size_mb", desc=False)
                      
-    elif worker_id in ["DBOS", "HUGGINGFACE"]:
-        # 🚜 重裝巨獸 (HF / DBOS)：無差別碾壓
+    elif worker_id in ["HUGGINGFACE", "AUDIO_EAT", "RAILWAY"]:
+        # 🚜 重裝巨獸：無差別碾壓
         query = query.order("audio_size_mb", desc=True, nullsfirst=True)
                      
     else:
@@ -40,14 +38,13 @@ def fetch_stt_tasks(sb, mem_tier, worker_id="UNKNOWN", fetch_limit=50):
     return query.limit(fetch_limit).execute().data or []
 
 def increment_soft_failure(sb, task_id):
-    """【容錯推進】遇到異常不崩潰，僅增加失敗計數並抹除 R2，讓系統下次動態重試"""
     try:
         res = sb.table("mission_queue").select("soft_failure_count").eq("id", task_id).single().execute()
         current_count = res.data.get("soft_failure_count") or 0
         sb.table("mission_queue").update({
             "soft_failure_count": current_count + 1,
             "scrape_status": "success", 
-            "r2_url": None # 🚀 修正：精準寫入 Python None，對應 SQL NULL
+            "r2_url": None  # 🚀 使用 Python 的 None，對應資料庫的 SQL NULL
         }).eq("id", task_id).execute()
         print(f"🚩 [容錯推進] 任務 {task_id[:8]} 失敗次數 +1 (目前: {current_count + 1}/6)")
     except Exception as e: 
@@ -72,8 +69,7 @@ def update_intel_success(sb, task_id, summary, score):
         "report_date": datetime.now().strftime("%Y-%m-%d"), 
         "total_score": score
     }).eq("task_id", task_id).execute()
-    try:
-        sb.table("mission_queue").update({"scrape_status": "completed"}).eq("id", task_id).execute()
+    try: sb.table("mission_queue").update({"scrape_status": "completed"}).eq("id", task_id).execute()
     except: pass
 
 def delete_intel_task(sb, task_id):
@@ -113,10 +109,10 @@ def call_gemini_summary(secrets, r2_url_path, sys_prompt):
     resp.raise_for_status()
     raw_bytes = resp.content
     
-    # 💡 防護一：起飛前安檢 (14MB 硬上限)
+    # 💡 防護：起飛前安檢 (14MB 硬上限)
     file_size_mb = len(raw_bytes) / (1024 * 1024)
     if file_size_mb > 14.0:
-        del raw_bytes; gc.collect() # 攔截成功，釋放記憶體
+        del raw_bytes; gc.collect() 
         raise Exception(f"越權攔截：壓縮後檔案仍達 {file_size_mb:.1f}MB，中型機甲無重裝權限，退回交接給重裝部隊。")
 
     b64_audio = base64.b64encode(raw_bytes).decode('utf-8')
@@ -134,22 +130,34 @@ def call_gemini_summary(secrets, r2_url_path, sys_prompt):
         if cands and cands[0].get('content'): return cands[0]['content']['parts'][0].get('text', "")
         return ""
     else: 
-        # 💡 防護二：墜機黑盒子
         err_msg = ai_resp.text[:200] 
         raise Exception(f"Gemini API 拒絕存取 (HTTP {ai_resp.status_code}): {err_msg}")
 
-def send_tg_report(secrets, source, title, summary):
+def send_tg_report(secrets, source, title, summary, sb=None, worker_id="UNKNOWN"):
+    """【TG 防彈版】靜默處理 TG 崩潰，保全主線。"""
     safe_summary = summary[:3800] + ("...\n(因字數限制截斷)" if len(summary) > 3800 else "")
     safe_source = str(source).replace("_", "＿").replace("*", "＊").replace("[", "〔").replace("]", "〕").replace("`", "‵")
     safe_title = str(title).replace("_", "＿").replace("*", "＊").replace("[", "〔").replace("]", "〕").replace("`", "‵")
     report_msg = f"🎙️ *{safe_source}*\n📌 *{safe_title}*\n\n{safe_summary}"
+    
     url = f"https://api.telegram.org/bot{secrets['TG_TOKEN']}/sendMessage"
     payload = {"chat_id": secrets["TG_CHAT"], "text": report_msg, "parse_mode": "Markdown"}
+    
     try:
         resp = requests.post(url, json=payload, timeout=15)
         if resp.status_code != 200:
             payload["parse_mode"] = None
             resp = requests.post(url, json=payload, timeout=15)
         if resp.status_code == 200: return True
-        else: raise Exception(f"Telegram 終極發送失敗: {resp.text}")
-    except Exception as e: raise e
+        else: raise Exception(f"HTTP {resp.status_code} - {resp.text}")
+    except Exception as e: 
+        err_msg = f"⚠️ TG 戰報發送失敗: {str(e)[:150]}"
+        print(f"[{worker_id}] {err_msg} (已轉紀錄至 S_LOG，主線任務繼續)")
+        if sb:
+            try:
+                sb.table("pod_scra_log").insert({
+                    "worker_id": worker_id, "task_type": "TG_REPORT", "status": "ERROR",
+                    "message": f"TG 發報失敗 | Title: {safe_title[:30]} | Err: {str(e)[:100]}"
+                }).execute()
+            except: pass 
+        return False
