@@ -65,7 +65,7 @@ def fetch_summary_tasks(sb, fetch_limit=50):
     # 🚀 絕對物理防線：中/輕型機甲，在雷達階段徹底無視 14MB 以上的巨怪！
     if worker_id not in ["HUGGINGFACE", "DBOS", "AUDIO_EAT", "RAILWAY"]:
         # 透過外鍵關聯 (Foreign Key) 直接在資料庫底層進行數值過濾
-        query = query.lte("mission_queue.audio_size_mb", 14.0)
+        query = query.lte("mission_queue.audio_size_mb", 14)
 
     return query.order("created_at").limit(fetch_limit).execute().data or []
 
