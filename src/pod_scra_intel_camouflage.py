@@ -1,96 +1,71 @@
 # ---------------------------------------------------------
-# 程式碼：src/pod_scra_intel_camouflage.py (V5.7 KOYEB_基因種子偽裝模組 - 坦誠相對版)
+# 程式碼：src/pod_scra_intel_camouflage.py (V5.9.8 大道至簡：全軍 Tier 1 追溯版)
 # 職責：提供千面人級別的 HTTP Headers，規避反爬蟲雷達。
-# 戰術：[主將] 每日換裝 / [後勤] 永遠固定專屬制服。
-# 修正：捨棄不合理的高防護行動裝置偽裝。後勤大方承認開源聚合器身分，主將改用合法 Linux 特徵，完美融入 Podcast 生態圈。
+# 戰術：全軍每日換裝，固定日期的 Seed 確保 24 小時內特徵一致，且 100% 可逆向追溯。
+# [V5.9.8 升級] 戰略收斂：拔除次級迷彩，全軍強制穿著 Tier 1 (Apple/Spotify) 絕對白名單。
 # ---------------------------------------------------------
 import random
 from datetime import datetime, timezone
 
 def get_camouflage_headers(worker_id: str, is_duty_officer: bool = True) -> dict:
     """
-    根據機甲身分發放裝備：
-    - 主將 (True): 機甲代號 + 日期 -> 每天換一套。
-    - 後勤 (False): 機甲代號 + _IDLE -> 永遠穿同一套專屬制服。
+    發放裝備邏輯：
+    全軍皆使用 Tier 1 (極低風險) 裝備。
+    Seed 綁定「機甲代號 + 任務狀態 + 系統日期」，確保一天內出勤 N 次皆穿同一套，降低風險積分。
     """
+    
     today_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-    # 🚀 固定種子：讓每台後勤機甲擁有不同、但各自固定的專屬制服
-    seed = f"{worker_id}_{today_str}" if is_duty_officer else f"{worker_id}_IDLE"
+    # 🚀 精準溯源種子：區分主將與後勤，但兩者皆會每日換裝
+    role_str = "DUTY" if is_duty_officer else "IDLE"
+    seed = f"{worker_id}_{role_str}_{today_str}"
     tactical_rng = random.Random(seed)
 
     # ==========================================
-    # 🛡️ [後勤兵專屬] 極簡匿蹤套裝 (AntennaPod 變體)
+    # 🛠️ 20% 小套件軍械庫 (動態變數池)
     # ==========================================
-    if not is_duty_officer:
-        # 5 個版本號 x 4 種語言 = 20 種獨一無二的固定制服 (足夠 10 台以上機甲分配)
-        versions = ["3.1.0", "3.1.1", "3.2.0", "3.3.0", "3.3.1"]
-        langs = ["en-US,en;q=0.9", "en-GB,en;q=0.8", "zh-TW,zh;q=0.9", "es-US,es;q=0.9"]
-        
-        return {
-            "User-Agent": f"AntennaPod/{tactical_rng.choice(versions)}",
-            "Accept": "audio/webm,audio/ogg,audio/wav,audio/*;q=0.9,*/*;q=0.5",
-            "Accept-Language": tactical_rng.choice(langs),
-            "Connection": "keep-alive"
-        }
-
-    # ==========================================
-    # ⚔️ [值勤官專屬] 坦誠相對的多變指紋 (物理相容)
-    # ==========================================
-    LANGUAGES = [
-        "en-US,en;q=0.9",                                      
-        "en-US,en;q=0.9,es-US;q=0.8,es;q=0.7",                 
-        "en-US,en;q=0.9,zh-TW;q=0.8,zh-CN;q=0.7",              
-        "en-GB,en-US;q=0.9,en;q=0.8",                          
-    ]
+    # Apple 相關參數
+    ios_versions = ["15_4_1", "15_5", "16_0_2", "16_1", "16_3_1", "17_0_1"]
+    mac_versions = ["12_3_1", "12_4", "13_1", "13_2_1", "14_0"]
+    core_media_ios = ["1.0.0.19E266", "1.0.0.19F77", "1.0.0.20A362", "1.0.0.20B92"]
+    core_media_mac = ["1.0.0.21F79", "1.0.0.21G83", "1.0.0.22A400"]
+    iphone_models = ["iPhone12,1", "iPhone13,2", "iPhone14,2", "iPhone14,5", "iPhone15,2"]
     
-    # 80% 無 Referer，背景排程下載器本來就不會有 Referer
-    REFERERS = [None] * 16 + [
-        "https://www.google.com/",                             
-        "https://podcasts.apple.com/",                         
-        "https://t.co/",                                       
-        "https://www.bing.com/"                                
+    # Spotify 相關參數
+    spotify_ios_ver = ["8.8.12", "8.8.22", "8.8.30", "8.8.44"]
+    spotify_and_ver = ["8.8.14", "8.8.26", "8.8.38", "8.8.50"]
+    android_api = ["31", "32", "33", "34"]
+    android_models = ["SM-G991B", "SM-S901B", "SM-S908B", "Pixel 6", "Pixel 7 Pro"]
+
+    # ==========================================
+    # 🟢 Tier 1: 絕對白名單軍械庫 (全軍配發)
+    # ==========================================
+    VIP_PROFILES = [
+        # --- AppleCoreMedia (iOS) ---
+        {"User-Agent": f"AppleCoreMedia/{tactical_rng.choice(core_media_ios)} (iPhone; U; CPU OS {tactical_rng.choice(ios_versions)} like Mac OS X; zh_tw)", "Accept": "*/*"},
+        {"User-Agent": f"AppleCoreMedia/{tactical_rng.choice(core_media_ios)} (iPhone; U; CPU OS {tactical_rng.choice(ios_versions)} like Mac OS X; en_us)", "Accept": "*/*"},
+        
+        # --- AppleCoreMedia (macOS) ---
+        {"User-Agent": f"AppleCoreMedia/{tactical_rng.choice(core_media_mac)} (Macintosh; U; Intel Mac OS X {tactical_rng.choice(mac_versions)}; en_us)", "Accept": "*/*"},
+        {"User-Agent": f"AppleCoreMedia/{tactical_rng.choice(core_media_mac)} (Macintosh; U; Intel Mac OS X {tactical_rng.choice(mac_versions)}; zh_tw)", "Accept": "*/*"},
+
+        # --- Spotify (iOS) ---
+        {"User-Agent": f"Spotify/{tactical_rng.choice(spotify_ios_ver)} iOS/{tactical_rng.choice(ios_versions).replace('_', '.')} ({tactical_rng.choice(iphone_models)})", "Accept": "*/*"},
+
+        # --- Spotify (Android) ---
+        {"User-Agent": f"Spotify/{tactical_rng.choice(spotify_and_ver)} Android/{tactical_rng.choice(android_api)} ({tactical_rng.choice(android_models)})", "Accept": "*/*"}
     ]
 
-    ACCEPT_AUDIO = "audio/webm,audio/ogg,audio/wav,audio/*;q=0.9,application/ogg;q=0.7,video/*;q=0.6,*/*;q=0.5"
-
-    PROFILES = [
-        # 🎭 套裝 0: 標準 Linux 伺服器瀏覽器 (坦蕩蕩的資料中心爬蟲)
-        {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Platform": '"Linux"'
-        },
-        # 🎭 套裝 1: 老式 Android 10 背景多媒體下載器 (Dalvik)
-        {
-            "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 10; SM-G960F Build/QP1A.190711.020)"
-        },
-        # 🎭 套裝 2: 開源 Podcast 播放器 (大方承認身分)
-        {
-            "User-Agent": "AntennaPod/3.2.0"
-        },
-        # 🎭 套裝 3: Android 11 上的舊版 ExoPlayer (音訊底層套件)
-        {
-            "User-Agent": "ExoPlayerDemo/2.15.1 (Linux; Android 11) ExoPlayerLib/2.15.1"
-        }
-    ]
-
-    base_profile = tactical_rng.choice(PROFILES)
+    base_profile = tactical_rng.choice(VIP_PROFILES)
     headers = base_profile.copy()
     
-    if "Accept" not in headers:
-        headers["Accept"] = ACCEPT_AUDIO
-        
-    if "Mozilla" in headers["User-Agent"]:
-        headers["Accept-Language"] = tactical_rng.choice(LANGUAGES)
+    # 補齊 Podcast 常用的 Audio 請求特徵
+    if "Accept" not in headers or headers["Accept"] == "*/*":
+        headers["Accept"] = "audio/webm,audio/ogg,audio/wav,audio/*;q=0.9,application/ogg;q=0.7,*/*;q=0.5"
         
     headers["Connection"] = "keep-alive"
     
-    chosen_referer = tactical_rng.choice(REFERERS)
-    if chosen_referer and "Mozilla" in headers["User-Agent"]:
-        headers["Referer"] = chosen_referer
-        
+    # 加入隨機快取控制，模擬真實瀏覽行為 (24 小時內這個值也會因為 seed 固定而保持一致，非常安全)
     if tactical_rng.choice([True, False]):
-        headers["Cache-Control"] = "max-age=0"
+        headers["Cache-Control"] = "no-cache"
 
     return headers
