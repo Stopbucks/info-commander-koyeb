@@ -1,12 +1,10 @@
 # ---------------------------------------------------------
-# src/pod_scra_intel_techcore.py v5.9.2 (中型部隊專用：大腦閘門與 TG 防彈版)
-# 職責：1. [雷達] fetch_stt_tasks：對接 Supabase 智能檢視表，進行三級分流。
+# src/pod_scra_intel_techcore.py v5.9.4 (中型部隊專用：純 REST 與核彈隔離版)
+# 職責：1. [雷達] fetch_stt_tasks：對接 Supabase 智能檢視表，進行三級分流與兵牌隔離。
 #       2. [容錯] increment_soft_failure：處理失敗不墜機，打上標記交接重裝。
 #       3. [火力] 封裝 Supabase 讀寫、REST API 呼叫與 TG 戰報。
-# 1. FLY 游擊隊精準鎖定 .opus 檔案。
-# 2. Gemini 手刻 API 加裝 14MB 起飛前安檢與錯誤黑盒子。
-# [V5.9.2 更新] 全面導入 vw_safe_mission_queue，雷達程式碼極簡化。
-# [V5.9.2 更新] 強化 send_tg_report：攔截 TG 崩潰錯誤，靜默紀錄保全主線。
+# [V5.9.2 保留] Gemini 手刻 API 加裝 14MB 起飛前安檢與錯誤黑盒子 (無 SDK 依賴)。
+# [V5.9.4 更新] 實裝「核彈隔離區」：中型部隊嚴禁觸碰指派給 AUDIO_EAT 等專屬大檔。
 # 適用：RENDER, KOYEB, ZEABUR (純 REST 輕快版，無 SDK 依賴)
 # ---------------------------------------------------------
 import requests, base64, re, gc
@@ -16,11 +14,15 @@ from datetime import datetime
 # 📡 戰略雷達 (Strategic Radar)
 # =========================================================
 def fetch_stt_tasks(sb, mem_tier, worker_id="UNKNOWN", fetch_limit=50):
-    """【低耦合戰略閘道】依據 mem_tier 進行動態三級分流 (全域冷卻與過濾交由 VIEW 處理)"""
+    """【低耦合戰略閘道】依據 mem_tier 進行動態分流，並實裝兵牌隔離"""
     
-    # 🚀 戰略升級：直接讀取「智能冷卻檢視表」，自動享有防重複、軟失敗剔除與大檔冷卻裝甲
     query = sb.table("vw_safe_mission_queue").select("*")
 
+    # 🛡️ 核彈隔離防線：其他所有機甲，絕對不准碰 AUDIO_EAT 的專屬檔案！
+    # Supabase 的 neq 會過濾掉 NULL，必須用 or_ 把 NULL 加回來，加上 T2 標籤
+    query = query.or_("assigned_troop.neq.AUDIO_EAT,assigned_troop.is.null,assigned_troop.eq.T2")
+
+    # 🚀 動態分流 (中型部隊只會走到 else 區塊，但保留完整邏輯以備不時之需)
     if mem_tier < 512:
         # 🏹 輕裝游擊隊 (FLY): 安全第一
         query = query.gte("audio_size_mb", 0).ilike("r2_url", "%.opus").lt("audio_size_mb", 15) \
@@ -50,16 +52,14 @@ def increment_soft_failure(sb, task_id):
     except Exception as e: 
         print(f"⚠️ 容錯推進紀錄失敗: {e}")
 
-
-
 # =========================================================
 # 📊 資料庫軍械庫 (Database Armory)
 # =========================================================
 def fetch_summary_tasks(sb, fetch_limit=50):
-    import os # 確保 os 模組可用以獲取環境變數
+    import os 
     worker_id = os.environ.get("WORKER_ID", "UNKNOWN")
     
-    # 💡 擴充查詢：在 mission_queue 的關聯中加入 audio_size_mb 欄位以供後續過濾
+    # 💡 擴充查詢：在 mission_queue 的關聯中加入 audio_size_mb 欄位以供過濾
     query = sb.table("mission_intel").select("*, mission_queue(episode_title, source_name, r2_url, audio_size_mb)").eq("intel_status", "Sum.-pre")
     
     # 🚀 絕對物理防線：中/輕型機甲，在雷達階段徹底無視 14MB 以上的巨怪！
@@ -67,10 +67,10 @@ def fetch_summary_tasks(sb, fetch_limit=50):
         # 透過外鍵關聯 (Foreign Key) 直接在資料庫底層進行數值過濾
         query = query.lte("mission_queue.audio_size_mb", 14)
 
+    # 💡 中型機甲不負責撿死檔，所以維持單純的 Sum.-pre 查詢即可
     return query.order("created_at").limit(fetch_limit).execute().data or []
 
 def upsert_intel_status(sb, task_id, status, provider=None, stt_text=None):
-
     payload = {"task_id": task_id, "intel_status": status}
     if provider: payload["ai_provider"] = provider
     if stt_text: payload["stt_text"] = stt_text
@@ -124,7 +124,7 @@ def call_gemini_summary(secrets, r2_url_path, sys_prompt):
     resp.raise_for_status()
     raw_bytes = resp.content
     
-    # 💡 防護：起飛前安檢 (14MB 硬上限)
+    # 💡 防護：起飛前安檢 (14MB 硬上限，確保手刻 REST 不會 OOM 或超載)
     file_size_mb = len(raw_bytes) / (1024 * 1024)
     if file_size_mb > 14.0:
         del raw_bytes; gc.collect() 
@@ -164,7 +164,7 @@ def send_tg_report(secrets, source, title, summary, sb=None, worker_id="UNKNOWN"
             payload["parse_mode"] = None
             resp = requests.post(url, json=payload, timeout=15)
         if resp.status_code == 200: return True
-        else: raise Exception(f"HTTP {resp.status_code} - {resp.text}")
+        else: raise Exception(f"Telegram 終極發送失敗: {resp.text}")
     except Exception as e: 
         err_msg = f"⚠️ TG 戰報發送失敗: {str(e)[:150]}"
         print(f"[{worker_id}] {err_msg} (已轉紀錄至 S_LOG，主線任務繼續)")
