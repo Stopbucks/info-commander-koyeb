@@ -1,14 +1,16 @@
 # ---------------------------------------------------------
-# src/pod_scra_intel_techcore.py v5.9.4 (中型部隊專用：純 REST 與核彈隔離版)
+# src/pod_scra_intel_techcore.py v5.9.5 (中型部隊專用：純 REST + curl_cffi 升級版)
 # 職責：1. [雷達] fetch_stt_tasks：對接 Supabase 智能檢視表，進行三級分流與兵牌隔離。
 #       2. [容錯] increment_soft_failure：處理失敗不墜機，打上標記交接重裝。
 #       3. [火力] 封裝 Supabase 讀寫、REST API 呼叫與 TG 戰報。
 # [V5.9.2 保留] Gemini 手刻 API 加裝 14MB 起飛前安檢與錯誤黑盒子 (無 SDK 依賴)。
-# [V5.9.4 更新] 實裝「核彈隔離區」：中型部隊嚴禁觸碰指派給 AUDIO_EAT 等專屬大檔。
+# [V5.9.4 保留] 實裝「核彈隔離區」：中型部隊嚴禁觸碰指派給 AUDIO_EAT 等專屬大檔。
+# [V5.9.5 更新] 核心連線套件全面升級為 curl_cffi，提升 HTTP/2 連線穩定度。
 # 適用：RENDER, KOYEB, ZEABUR (純 REST 輕快版，無 SDK 依賴)
 # ---------------------------------------------------------
-import requests, base64, re, gc
+import base64, re, gc
 from datetime import datetime
+from curl_cffi import requests # 🚀 換裝：使用 curl_cffi 替換原生 requests
 
 # =========================================================
 # 📡 戰略雷達 (Strategic Radar)
@@ -97,7 +99,6 @@ def parse_intel_metrics(text):
         if s_match: metrics["score"] = int(s_match.group(1))
     except: pass
     return metrics
-
 # =========================================================
 # 🧠 AI 火控與通訊 (AI & Comms)
 # =========================================================
@@ -105,14 +106,21 @@ def parse_intel_metrics(text):
 def call_groq_stt(secrets, r2_url_path):
     url = f"{secrets['R2_URL']}/{r2_url_path}"
     m_type = "audio/ogg" if ".opus" in url else "audio/mpeg"
+    
+    # 🚀 使用 curl_cffi 發送請求，語法與原本 100% 相容
     resp = requests.get(url, timeout=60)
     resp.raise_for_status()
     audio_data = resp.content
+    
     headers = {"Authorization": f"Bearer {secrets['GROQ_KEY']}"}
     files = {'file': (r2_url_path, audio_data, m_type)}
     data = {'model': 'whisper-large-v3', 'response_format': 'text', 'language': 'en'}
+    
     stt_resp = requests.post("https://api.groq.com/openai/v1/audio/transcriptions", headers=headers, files=files, data=data, timeout=120)
+    
+    # 確保釋放二進位資源
     del audio_data, files, resp; gc.collect()
+    
     if stt_resp.status_code == 200: return stt_resp.text
     else: raise Exception(f"Groq API Error: HTTP {stt_resp.status_code} - {stt_resp.text}")
 
@@ -124,7 +132,6 @@ def call_gemini_summary(secrets, r2_url_path, sys_prompt):
     resp.raise_for_status()
     raw_bytes = resp.content
     
-    # 💡 防護：起飛前安檢 (14MB 硬上限，確保手刻 REST 不會 OOM 或超載)
     file_size_mb = len(raw_bytes) / (1024 * 1024)
     if file_size_mb > 14.0:
         del raw_bytes; gc.collect() 
