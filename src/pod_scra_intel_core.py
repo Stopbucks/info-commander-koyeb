@@ -1,14 +1,19 @@
 # ---------------------------------------------------------
-# src/pod_scra_intel_core.py v5.9.2 (中型部隊專用：大腦閘門與絕對深潛防禦)
+# src/pod_scra_intel_core.py v5.9.7 (中型部隊 KOYEB 專用：智能閘門與預佔鎖防禦)
 # 適用部隊：RENDER, KOYEB, ZEABUR
 # 任務：專注於 STT 與 Summary 的核心戰鬥流程。
 # [V5.9.2 更新] 1. 移除冗餘重複檢查，全面交由 Supabase VIEW (vw_safe_mission_queue) 過濾。
 # [V5.9.2 更新] 2. 雙產線全面實裝 429 絕對防禦：深潛 180~300 秒並強制斷尾。
 # [V5.9.2 更新] 3. 第二棒套用全新 TG 靜默防禦網，保護主線結案。
-# [保留] 物理級斷開 (壓完即收隊)、14MB 智能交接防線 (移交重裝)。
+# [V5.9.3 補齊] 第一棒與第二棒全面實裝「預佔鎖 (Pessimistic Locking)」。
+# [V5.9.5 更新] 核心連線套件全面升級為 curl_cffi，統一全軍 HTTP 引擎。
+# [V5.9.6 更新] 升級智能大腦閘門：放寬中型機甲壓縮極限至 85MB。
+# [V5.9.7 零信任] 修復軟失敗歸零邏輯，確保成功任務重獲新生，補齊缺失依賴。
 # ---------------------------------------------------------
-import os, time, random, gc, traceback, requests 
+
+import os, time, random, gc, traceback, base64, re 
 from datetime import datetime, timezone          
+from curl_cffi import requests # 🚀 換裝：使用 curl_cffi 替換原生 requests
 from src.pod_scra_intel_control import get_tactical_panel, get_sb, get_secrets 
 from src.pod_scra_intel_r2 import compress_task_to_opus  
 from src.pod_scra_intel_groqcore import GroqFallbackAgent
@@ -60,17 +65,23 @@ def run_audio_to_stt_mission(sb=None):
 
         task_id = task['id']
         r2_url = str(task.get('r2_url') or '').lower()
-        
-        # 💡 [防禦升級 1] 遇到已經壓縮好，但大於 14MB 的 Opus，中型機甲不准碰！留給重裝部隊
         current_size = task.get('audio_size_mb') or 0
+        
+        # 🚀 [防禦升級：智能大腦閘門] 區分 Opus(轉譯) 與 MP3(壓縮) 的物理極限
         if r2_url.endswith('.opus') and current_size > 14.0:
-            print(f"⛔ [{worker_id}] 偵測到 {current_size}MB 的超大 Opus，超越 Base64 極限，保留給重裝部隊！")
-            continue
+            if worker_id not in ["HUGGINGFACE", "DBOS", "AUDIO_EAT", "RAILWAY"]:
+                print(f"⛔ [{worker_id}] 偵測到 {current_size}MB 超大 Opus，保留給重裝 API 處理！")
+                continue
+            
+        if not r2_url.endswith('.opus') and current_size > 85.0:
+            if worker_id not in ["HUGGINGFACE", "DBOS", "AUDIO_EAT", "RAILWAY"]:
+                print(f"⛔ [{worker_id}] 偵測到 {current_size}MB 巨型原檔，超越中型機甲 /tmp 極限，交給重裝部隊！")
+                continue
 
         if panel.get("COMPRESS_ONLY") and r2_url.endswith('.opus'):
             print(f"🔄 [{worker_id}] 兵工廠產能閒置：自動轉職為【主力兵】支援 AI 轉譯！")
 
-        print(f"🎯 [{worker_id}] 鎖定目標: {task.get('source_name')} (大小: {task.get('audio_size_mb')}MB)")
+        print(f"🎯 [{worker_id}] 鎖定目標: {task.get('source_name')} (大小: {current_size}MB)")
 
         try:
             is_compressed_now = False 
@@ -80,7 +91,7 @@ def run_audio_to_stt_mission(sb=None):
                 try:
                     sb.table("pod_scra_log").insert({
                         "worker_id": worker_id, "task_type": "CORE_STT", "status": "WARNING",
-                        "message": f"⛔ 權限不足，跳過大怪獸 ({task.get('audio_size_mb')}MB) | Task: {task_id[:8]}"
+                        "message": f"⛔ 權限不足，跳過大怪獸 ({current_size}MB) | Task: {task_id[:8]}"
                     }).execute()
                 except: pass
                 continue
@@ -117,8 +128,7 @@ def run_audio_to_stt_mission(sb=None):
                     sb.table("mission_queue").update(update_payload).eq("id", task_id).execute()
                     task['r2_url'] = new_url
                     
-                    # 💡 [防禦升級 2] 壓縮完畢後，如果體積大於 14MB，中型部隊立刻收隊，保留給重裝！
-                    if compressed_size_mb > 14.0:
+                    if compressed_size_mb > 14.0 and worker_id not in ["HUGGINGFACE", "DBOS", "AUDIO_EAT", "RAILWAY"]:
                         msg = f"⚠️ 壓縮後仍達 {compressed_size_mb:.1f}MB！超越中型機甲極限，已入庫並移交重裝部隊！"
                         print(f"[{worker_id}] {msg}")
                         try:
@@ -152,7 +162,13 @@ def run_audio_to_stt_mission(sb=None):
             chosen_provider = "GROQ" if panel.get("SCOUT_MODE") else "GEMINI"
 
             print(f"🎲 [{worker_id}] 戰術分流 -> [{chosen_provider}] (檔案已確認為輕量 Opus)")
+            
+            # 🚀 👇 [第一棒：預佔鎖] 呼叫 API 前，先預佔狀態並 +1 失敗次數
+            print(f"🔒 [{worker_id}] 執行第一棒狀態預佔：標記為 Sum.-proc 並預先增加失敗計數...")
             upsert_intel_status(sb, task_id, "Sum.-proc", chosen_provider)
+            current_fails = task.get('soft_failure_count') or 0
+            sb.table("mission_queue").update({"soft_failure_count": current_fails + 1}).eq("id", task_id).execute()
+            # 🚀 👆
 
             if chosen_provider == "GROQ":
                 stt_text = call_groq_stt(s, r2_url)
@@ -162,6 +178,8 @@ def run_audio_to_stt_mission(sb=None):
                 upsert_intel_status(sb, task_id, "Sum.-pre", stt_text="[GEMINI_2.5_NATIVE_STREAM]")
                 print(f"✅ [{worker_id}] GEMINI 鎖定原生流")
 
+            # 💡 [V5.9.7 零信任修復] 任務成功！將軟失敗直接歸 0，重獲新生！
+            sb.table("mission_queue").update({"soft_failure_count": 0}).eq("id", task_id).execute()
             actual_processed += 1 
 
         except Exception as e:
@@ -169,8 +187,11 @@ def run_audio_to_stt_mission(sb=None):
             if '23505' in err_str or 'duplicate key' in err_str.lower():
                 print(f"🤝 [{worker_id}] 競態攔截：任務已被友軍接管。")
                 
-            # 🚀 第一棒 429 絕對深潛防禦
             elif '429' in err_str or 'quota' in err_str.lower():
+                print(f"🔄 [{worker_id}] 遭遇限流，退回任務狀態，解除預佔鎖...")
+                delete_intel_task(sb, task_id)
+                sb.table("mission_queue").update({"soft_failure_count": current_fails, "r2_url": None, "scrape_status": "pending"}).eq("id", task_id).execute()
+                
                 penalty_delay = random.uniform(180.0, 300.0)
                 print(f"⚠️ [{worker_id}] 第一棒 API 限流！強制深潛 {penalty_delay:.1f} 秒，放棄本輪剩餘任務！")
                 time.sleep(penalty_delay)
@@ -183,7 +204,7 @@ def run_audio_to_stt_mission(sb=None):
                     print(f"🕳️ [{worker_id}] 踩到 404 炸彈！退回物流佇列！")
                     sb.table("mission_queue").update({"r2_url": None, "scrape_status": "pending"}).eq("id", task_id).execute()
                 else:
-                    increment_soft_failure(sb, task_id)
+                    sb.table("mission_queue").update({"r2_url": None, "scrape_status": "pending"}).eq("id", task_id).execute()
             
         finally:
             gc.collect()
@@ -216,7 +237,6 @@ def run_stt_to_summary_mission(sb=None):
             print(f"⏱️ [{worker_id}] 摘要產線逼近安全極限 ({panel['SAFE_DURATION_SECONDS']}s)，強制撤退！")
             break
             
-        # 🚀 [Jitter 雜訊升級] 
         if actual_processed > 0:
             delay = random.uniform(8.0, 15.0)
             print(f"⏳ [{worker_id}] 戰術冷卻 {delay:.1f} 秒，等待 API 恢復 Token 池...")
@@ -235,6 +255,14 @@ def run_stt_to_summary_mission(sb=None):
 
         try:
             summary = ""
+            
+            # 🚀 👇 [第二棒：預佔鎖] 呼叫 API 前，先預佔狀態並 +1 失敗次數
+            print(f"🔒 [{worker_id}] 執行第二棒狀態預佔：標記為 Sum.-proc 並預先增加失敗計數...")
+            upsert_intel_status(sb, task_id, "Sum.-proc", provider)
+            current_fails = q_data.get('soft_failure_count') or 0
+            sb.table("mission_queue").update({"soft_failure_count": current_fails + 1}).eq("id", task_id).execute()
+            # 🚀 👆
+
             if provider == "GROQ":
                 groq_agent = GroqFallbackAgent()
                 summary = groq_agent.generate_summary(intel['stt_text'], sys_prompt)
@@ -243,9 +271,10 @@ def run_stt_to_summary_mission(sb=None):
 
             if summary:
                 metrics = parse_intel_metrics(summary)
-                # 🚀 引入 V5.9.2 安全傳參：啟動 TG 靜默防禦網
                 send_tg_report(s, q_data.get('source_name', '未知'), q_data.get('episode_title', '未知'), summary, sb, worker_id)
                 
+                # 💡 [V5.9.7 零信任修復] 任務成功！將軟失敗直接歸 0，並更新狀態為已發送結案
+                sb.table("mission_queue").update({"soft_failure_count": 0}).eq("id", task_id).execute()
                 update_intel_success(sb, task_id, summary, metrics["score"])
                 print(f"🎉 [{worker_id}] 戰報發送成功，摘要已安全結案！")
                 actual_processed += 1 
@@ -254,16 +283,24 @@ def run_stt_to_summary_mission(sb=None):
             err_str = str(e)
             print(f"❌ [{worker_id}] 第二棒崩潰: {err_str}")
             
-            # 🚀 第二棒 429 絕對深潛防禦
             if '429' in err_str or 'quota' in err_str.lower(): 
+                print(f"🔄 [{worker_id}] 遭遇限流，退回任務狀態，解除預佔鎖...")
+                upsert_intel_status(sb, task_id, "Sum.-pre", provider)
+                sb.table("mission_queue").update({"soft_failure_count": current_fails}).eq("id", task_id).execute()
+
                 penalty_delay = random.uniform(180.0, 300.0)
                 print(f"⚠️ [{worker_id}] 摘要 API 枯竭！強制深潛 {penalty_delay:.1f} 秒，放棄後續任務以保護 Token 池！")
                 time.sleep(penalty_delay)
                 break 
                 
             elif '404' in err_str and 'Not Found' in err_str:
+                print(f"🕳️ [{worker_id}] 踩到 404 炸彈！抹除紀錄退回物流。")
                 delete_intel_task(sb, task_id)
                 sb.table("mission_queue").update({"r2_url": None, "scrape_status": "pending"}).eq("id", task_id).execute()
+            
+            else:
+                print(f"🔄 [{worker_id}] 任務異常，保留失敗標記，等待下次重試。")
+                upsert_intel_status(sb, task_id, "Sum.-pre", provider)
         
         finally:
             gc.collect()
