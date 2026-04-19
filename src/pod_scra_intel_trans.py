@@ -132,8 +132,8 @@ def run_logistics_engine(sb, config, now_iso, s_log_func, my_blacklist, dl_limit
             camo_gear = get_tactical_camouflage(worker_id, is_duty_officer)
             dynamic_headers = camo_gear["headers"]
             tls_fingerprint = camo_gear["impersonate"]
-            
-            # 🚀 戰術升級：使用動態配對的 TLS 指紋啟動 Session，達成表裡一致
+
+             # 🚀 戰術升級：使用動態配對的 TLS 指紋啟動 Session，達成表裡一致
             with requests.Session(impersonate=tls_fingerprint) as session:
                 # 💡 拆除 __enter__ 炸彈：不使用 with，改為直接賦值
                 r = session.get(f_url, stream=True, timeout=180, headers=dynamic_headers)
@@ -149,9 +149,15 @@ def run_logistics_engine(sb, config, now_iso, s_log_func, my_blacklist, dl_limit
                     # 💡 安全收尾：明確關閉連線
                     r.close()
                     
+            # 👇👇👇 往左退一格縮排，讓 Session 提早關閉釋放記憶體 👇👇👇
             s3.upload_file(tmp_path, bucket, os.path.basename(tmp_path))
             sb.table("mission_queue").update({"scrape_status": "completed", "r2_url": os.path.basename(tmp_path)}).eq("id", m['id']).execute()
             s_log_func(sb, "DOWNLOAD", "SUCCESS", f"✅ 物資入庫: {m['id'][:8]}")
+            # 👆👆👆 ========================================= 👆👆👆
+            
+
+
+        except requests.exceptions.HTTPError as he:
             
         except requests.exceptions.HTTPError as he:
             status_code = getattr(he.response, 'status_code', 0)
