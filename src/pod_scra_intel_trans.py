@@ -154,6 +154,8 @@ def run_logistics_engine(sb, config, now_iso, s_log_func, my_blacklist, dl_limit
             s3.upload_file(tmp_path, bucket, os.path.basename(tmp_path))
             sb.table("mission_queue").update({"scrape_status": "completed", "r2_url": os.path.basename(tmp_path)}).eq("id", m['id']).execute()
             s_log_func(sb, "DOWNLOAD", "SUCCESS", f"✅ 物資入庫: {m['id'][:8]}")
+            
+            downloaded_count += 1  # 👈 🚨 關鍵修補：任務完成，計數器 +1！
             # 👆👆👆 ========================================= 👆👆👆
 
         except requests.exceptions.HTTPError as he:
