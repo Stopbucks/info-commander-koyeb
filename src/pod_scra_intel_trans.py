@@ -23,6 +23,7 @@
 # [隱蔽] 導入 camouflage 千面人模組，透過身分旗標精準配發迷彩。
 # ---------------------------------------------------------
 
+
 import os, time, random, gc, json
 from curl_cffi import requests # 🚀 換裝！
 from urllib.parse import urlparse
@@ -154,11 +155,7 @@ def run_logistics_engine(sb, config, now_iso, s_log_func, my_blacklist, dl_limit
             sb.table("mission_queue").update({"scrape_status": "completed", "r2_url": os.path.basename(tmp_path)}).eq("id", m['id']).execute()
             s_log_func(sb, "DOWNLOAD", "SUCCESS", f"✅ 物資入庫: {m['id'][:8]}")
             # 👆👆👆 ========================================= 👆👆👆
-            
 
-
-        except requests.exceptions.HTTPError as he:
-            
         except requests.exceptions.HTTPError as he:
             status_code = getattr(he.response, 'status_code', 0)
             if status_code in [403, 401, 429]:
@@ -175,4 +172,4 @@ def run_logistics_engine(sb, config, now_iso, s_log_func, my_blacklist, dl_limit
             s_log_func(sb, "DOWNLOAD", "ERROR", f"❌ 搬運失敗: {str(e)}")
         finally:
             if os.path.exists(tmp_path): os.remove(tmp_path)
-            gc.collect()            
+            gc.collect()
