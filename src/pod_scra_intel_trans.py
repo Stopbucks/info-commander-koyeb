@@ -1,6 +1,5 @@
-
 # ---------------------------------------------------------
-# 程式碼：src/pod_scra_intel_trans.py  (V6 curl_cffi & Header成套 變速箱_面板統御防崩潰版)
+# 程式碼：src/pod_scra_intel_trans.py  (V5.9 變速箱_面板統御_裝甲防線版)
 # [節拍] 狀態機邏輯：透過 MAX_TICKS 控制循環。若主將設為 3 拍，則依序執行 [1:下載, 2:摘要, 3:轉譯]。
 # [節拍] 判斷公式：利用除以 2 的餘數 (current_tick % 2 != 0) 來動態交替分配任務型態。
 # [節拍] 任務分配：單數拍 (1, 3, 5...) 執行轉譯 (STT)；雙數拍 (2, 4, 6...) 執行摘要 (Summary)。
@@ -18,20 +17,18 @@
 # 3. [T2 敗戰轉移] 遭遇 403/401 封鎖時，自動將任務降級為 pending (冰封10天)並標記 T1_RESCUE。
 # 4. [黃金救援期] 推遲 troop2_start_at 7 天，完美錯開 T2 雷達，精準移交 T1 數位人格處理。
 # 5. 下載檔案放大至50M，相關設定:timeout=180s, 切片 3MB, 喘息 0.5s
-# 6. 引入成套 tactical_camouflage # 👈 更新動態HEADER搭配 curl_cffi名稱呼叫
-#  ---------------------------------------------------------
+# 6. [V5.9 裝甲] 打卡機制前移：在執行重型任務前，先將 current_tick 寫入 DB，防止 OOM 導致無限輪迴。
+# ---------------------------------------------------------
 # [隱蔽] 導入 camouflage 千面人模組，透過身分旗標精準配發迷彩。
 # ---------------------------------------------------------
-
 
 import os, time, random, gc, json
 from curl_cffi import requests # 🚀 換裝！
 from urllib.parse import urlparse
 from datetime import datetime, timezone, timedelta
 from src.pod_scra_intel_r2 import get_s3_client 
-from src.pod_scra_intel_control import get_tactical_panel # 🚀 引入控制面板
-from src.pod_scra_intel_camouflage import get_tactical_camouflage # 👈 更新動態HEADER名稱呼叫
-
+from src.pod_scra_intel_camouflage import get_tactical_camouflage
+from src.pod_scra_intel_control import get_tactical_panel
 
 def execute_fortress_stages(sb, config, s_log_func):
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -61,9 +58,24 @@ def execute_fortress_stages(sb, config, s_log_func):
     role_name = "👑 值勤官" if is_duty_officer else "🛠️ 後勤兵"
     s_log_func(sb, "STATE_M", "INFO", f"⚙️ [戰略狀態機] 身分: {role_name} | 階段節拍: {current_tick} / {max_ticks}")
 
+    # =====================================================================
+    # 👇👇👇 V5.9 關鍵防禦升級：將打卡動作「提前」到執行重型任務之前 👇👇👇
+    # 目的：即使稍後下載超時被平台強制關機，節拍也已經安全推進，打破無限輪迴！
+    # =====================================================================
+    w_status[tick_key] = current_tick
+    health = tactic.get('workers_health', {})
+    health[worker_id] = now_iso
+    sb.table("pod_scra_tactics").update({
+        "last_heartbeat_at": now_iso, 
+        "workers_health": health, 
+        "worker_status": w_status
+    }).eq("id", 1).execute()
+    # 👆👆👆 ========================================================= 👆👆👆
+
     from src.pod_scra_intel_core import run_audio_to_stt_mission, run_stt_to_summary_mission
 
-    # 🛡️ 只要是「第 1 拍」，全軍皆可出門！但依據身分給予不同載重量。
+    # 🛡️ 接下來再開始執行高風險的耗時任務
+    # 只要是「第 1 拍」，全軍皆可出門！但依據身分給予不同載重量。
     if current_tick == 1:
         dl_limit = 2 if is_duty_officer else 1  # 👈 主將拿 2 個，後勤兵低調只拿 1 個
         s_log_func(sb, "STATE_M", "INFO", f"{role_name} 執行階段 1/{max_ticks}: 外部走私下載 (上限 {dl_limit} 筆)")
@@ -81,11 +93,6 @@ def execute_fortress_stages(sb, config, s_log_func):
     else:
         s_log_func(sb, "STATE_M", "INFO", f"{role_name} 啟動摘要發報 (由面板接管)")
         run_stt_to_summary_mission(sb) 
-
-    w_status[tick_key] = current_tick
-    health = tactic.get('workers_health', {})
-    health[worker_id] = now_iso
-    sb.table("pod_scra_tactics").update({"last_heartbeat_at": now_iso, "workers_health": health, "worker_status": w_status}).eq("id", 1).execute()
 
 # 🚀 修正：接收 is_duty_officer 參數
 def run_logistics_engine(sb, config, now_iso, s_log_func, my_blacklist, dl_limit=2, is_duty_officer=True):
@@ -133,8 +140,8 @@ def run_logistics_engine(sb, config, now_iso, s_log_func, my_blacklist, dl_limit
             camo_gear = get_tactical_camouflage(worker_id, is_duty_officer)
             dynamic_headers = camo_gear["headers"]
             tls_fingerprint = camo_gear["impersonate"]
-
-             # 🚀 戰術升級：使用動態配對的 TLS 指紋啟動 Session，達成表裡一致
+            
+            # 🚀 戰術升級：使用動態配對的 TLS 指紋啟動 Session，達成表裡一致
             with requests.Session(impersonate=tls_fingerprint) as session:
                 # 💡 拆除 __enter__ 炸彈：不使用 with，改為直接賦值
                 r = session.get(f_url, stream=True, timeout=180, headers=dynamic_headers)
@@ -157,6 +164,8 @@ def run_logistics_engine(sb, config, now_iso, s_log_func, my_blacklist, dl_limit
             
             downloaded_count += 1  # 👈 🚨 關鍵修補：任務完成，計數器 +1！
             # 👆👆👆 ========================================= 👆👆👆
+            
+
 
         except requests.exceptions.HTTPError as he:
             status_code = getattr(he.response, 'status_code', 0)
