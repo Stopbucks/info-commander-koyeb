@@ -1,10 +1,5 @@
 # ---------------------------------------------------------
-# app.py (V5.5 KOYEB_主力極簡淨化與非同步防禦版)
-# [工作流程] 2026_0401以前 是每 2 小時執行一次任務，透過「初始隨機延遲 + 排程器 Jitter」錯開起跑線，避免羊群效應。
-# [工作流程] 本程式負責排程喚醒與連線保活，其他交由src/pod_scra_intel_trans.py  與 control.py 面板動態統御。
-
-# ---------------------------------------------------------
-# app.py (V5.8 KOYEB 零成本刺客專用版)
+# app.py (V5.8.1 KOYEB 零成本刺客專用版 + 影子沙盒掛載)
 # 適用：僅限 KOYEB 獨立倉庫
 # [工作流程]
 # 1. 由外部 Cron-job A (XX:58) 打 API 喚醒 KOYEB 容器。
@@ -12,6 +7,7 @@
 # 3. 任務執行完畢後，直接呼叫 Koyeb API 將自己強制 Pause (斷電)，達成 $0 元。
 # [修正] 拔除 BackgroundScheduler，完全交由外部驅動與自我毀滅。
 # [2026_0401] 觀察測試1個月，每5小時醒來1次
+# [新增] V5.8.1 於任務收隊前，掛載 Groq 影子沙盒測試 (Sidecar Sandbox)。
 # ---------------------------------------------------------
 import os, time, gc, random, threading, requests
 from datetime import datetime, timezone
@@ -113,7 +109,7 @@ def run_integrated_mission():
     MISSION_STATE["start_time"] = time.time()
     
     try:
-        s_log(sb, "SYSTEM", "SUCCESS", f"🚀 [{CONFIG['WORKER_ID']} V5.8] 零成本刺客連線！準備執行單次突擊！")
+        s_log(sb, "SYSTEM", "SUCCESS", f"🚀 [{CONFIG['WORKER_ID']} V5.8.1] 零成本刺客連線！準備執行單次突擊！")
         
         # 執行核心狀態機 (裡面會自動判斷 Ticks 去做下載/摘要/轉譯)
         execute_fortress_stages(sb, CONFIG, s_log)
@@ -128,9 +124,23 @@ def run_integrated_mission():
         if MISSION_LOCK.locked():
             try: MISSION_LOCK.release()
             except: pass
+        
+        # =====================================================================
+        # 🧪 👇👇👇 V5.8.1 影子沙盒測試區塊 (Sidecar Sandbox) 👇👇👇
+        # 說明：掛載於主線收隊後、自毀前。絕不干擾原本產線運作。
+        # 撤除：測試完畢後，直接將此 try-except 區塊刪除即可。
+        # =====================================================================
+        try:
+            # 延遲載入沙盒模組，避免影響主線啟動速度與常規記憶體消耗
+            from src.pod_scra_intel_sandbox import run_groq_sandbox_test
+            run_groq_sandbox_test(sb, s_log)
+        except Exception as sandbox_err:
+            s_log(sb, "SANDBOX", "ERROR", f"⚠️ 沙盒掛載異常: {sandbox_err}")
+        # 🧪 👆👆👆 ======================================================= 👆👆👆
+
         del sb; gc.collect()
         
-        # 💥 關鍵行動：無論任務成功或失敗，最後一定要呼叫自毀！
+        # 💥 關鍵行動：無論任務與沙盒是否成功，最後一定要呼叫自毀！
         self_destruct_koyeb()
 
 
