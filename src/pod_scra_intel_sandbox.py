@@ -5,6 +5,7 @@
 # 目的：測試純 API 連線穩定度與耗時，不涉及切塊技術。
 # ---------------------------------------------------------
 import os, time
+# 🚀 直接從軍械庫呼叫您已經寫好的完美 STT 函式 (內含 whisper-large-v3)
 from src.pod_scra_intel_techcore import call_groq_stt
 
 def run_groq_sandbox_test(sb, s_log_func):
