@@ -1,65 +1,69 @@
 # ---------------------------------------------------------
-# 程式碼：src/pod_scra_intel_sandbox.py (V5.8.3 甜蜜點精準狙擊版)
+# 程式碼：src/pod_scra_intel_sandbox.py (V5.8.5 多重狙擊版)
 # 任務：Groq API 金絲雀影子測試 (Canary Release)
-# 範圍：精準鎖定 14.0MB ~ 24.0MB 區間的無主大檔。
-# 目的：測試純 API 連線穩定度與耗時，不涉及切塊技術。
-# 先撤除過濾條件，測試GROQ逐字稿聽寫
+# 策略：準備多個已知靶材，輪詢試射。成功一發即撤退，程式碼極簡化。
 # ---------------------------------------------------------
 import os, time
-# 🚀 直接從軍械庫呼叫您已經寫好的完美 STT 函式 (內含 whisper-large-v3)
 from src.pod_scra_intel_techcore import call_groq_stt
 
 def run_groq_sandbox_test(sb, s_log_func):
-    """【沙盒演習】尋找 14~24MB 的甜區靶材，不干擾主線"""
+    """【沙盒演習】多重靶材輪詢，成功即結案"""
     worker_id = os.environ.get("WORKER_ID", "UNKNOWN_NODE")
     
     try:
-        s_log_func(sb, "SANDBOX", "INFO", f"🧪 [{worker_id}] 啟動 Groq 甜蜜點 (14-24MB) 影子測試...")
+        s_log_func(sb, "SANDBOX", "INFO", f"🧪 [{worker_id}] 啟動 Groq 多重定點狙擊測試...")
         
-        # 🎯 雷達校準：14.0 < 大小 <= 24.0
-        query = sb.table("vw_safe_mission_queue").select("id, r2_url, audio_size_mb, source_name, episode_title") \
-                  .gt("audio_size_mb", 14.0).lte("audio_size_mb", 24.0).ilike("r2_url", "%.opus") \
-                  .eq("scrape_status", "completed") \
-                  .order("created_at", desc=True).limit(10) 
+        # 🎯 標靶清單：依序排列優先權 (7.54MB 與 8.26MB)
+        TARGET_LIST = [
+            "opt_95b032f9.opus", 
+            "opt_91fc4d08.opus"
+        ]
         
-        targets = query.execute().data
-        if not targets:
-            s_log_func(sb, "SANDBOX", "INFO", "🛌 沙盒無靶材 (無 14~24MB 區間之 Opus 檔)。")
-            return
+        test_completed = False
+        
+        # 🔄 開始輪詢標靶
+        for target_r2 in TARGET_LIST:
+            if test_completed: break # 如果已經成功打完一發，就跳出迴圈
+                
+            query = sb.table("vw_safe_mission_queue").select("id, r2_url, audio_size_mb, source_name, episode_title") \
+                      .eq("r2_url", target_r2).limit(1) 
             
-        task = None
-
-
-        for t in targets:
-            # 🚀 解除防呆限制：直接拿第一筆符合大小的檔案當靶子！
-            task = t
-            break
+            targets = query.execute().data
+            if not targets:
+                s_log_func(sb, "SANDBOX", "INFO", f"⏭️ [跳過] 找不到靶材: {target_r2}，切換下一發。")
+                continue # 找不到就換下一個
+                
+            task = targets[0]
+            task_id = task['id']
+            r2_url = task['r2_url']
+            size = task['audio_size_mb']
             
-        if not task:
-            s_log_func(sb, "SANDBOX", "INFO", "🛌 目前符合 14~24MB 條件的靶材皆已完成測試。")
-            return
+            s_log_func(sb, "SANDBOX", "INFO", f"🎯 鎖定狙擊靶材: {task.get('source_name')} ({size}MB) - {task_id[:8]}")
             
-        task_id = task['id']
-        r2_url = task['r2_url']
-        size = task['audio_size_mb']
-        
-        s_log_func(sb, "SANDBOX", "INFO", f"🎯 鎖定甜區靶材: {task.get('source_name')} ({size}MB) - {task_id[:8]}")
-        
-        # 🚀 發起實彈射擊 (單發呼叫 Groq，無切塊)
-        start_time = time.time()
-        stt_text = call_groq_stt(os.environ, r2_url) 
-        elapsed = time.time() - start_time
-        
-        text_len = len(stt_text)
-        
-        # 🚨 寫入沙盒專屬狀態
-        sb.table("mission_intel").upsert({
-            "task_id": task_id, 
-            "stt_text": stt_text,
-            "intel_status": "Sandbox-Test" 
-        }, on_conflict="task_id").execute()
-        
-        s_log_func(sb, "SANDBOX", "SUCCESS", f"✅ Groq 轉譯成功！耗時: {elapsed:.1f}s | 字數: {text_len} | 甜蜜點測試通關。")
+            try:
+                # 🚀 發起實彈射擊
+                start_time = time.time()
+                stt_text = call_groq_stt(os.environ, r2_url) 
+                elapsed = time.time() - start_time
+                text_len = len(stt_text)
+                
+                # 🚨 寫入沙盒專屬狀態
+                sb.table("mission_intel").upsert({
+                    "task_id": task_id, 
+                    "stt_text": stt_text,
+                    "intel_status": "Sandbox-Test" 
+                }, on_conflict="task_id").execute()
+                
+                s_log_func(sb, "SANDBOX", "SUCCESS", f"✅ Groq 狙擊成功！靶材: {target_r2} | 耗時: {elapsed:.1f}s | 字數: {text_len}")
+                test_completed = True # 標記成功，準備撤退
+                
+            except Exception as stt_err:
+                # 如果這發子彈卡彈 (例如 API 逾時)，記錄錯誤並換下一發
+                s_log_func(sb, "SANDBOX", "WARNING", f"⚠️ 靶材 {target_r2} 試射失敗: {str(stt_err)[:100]}... 切換下一發。")
+                continue
+                
+        if not test_completed:
+            s_log_func(sb, "SANDBOX", "ERROR", "❌ 所有標靶皆狙擊失敗或無效。")
 
     except Exception as e:
-        s_log_func(sb, "SANDBOX", "ERROR", f"❌ Groq 沙盒測試失敗: {str(e)}")
+        s_log_func(sb, "SANDBOX", "ERROR", f"❌ Groq 沙盒系統異常: {str(e)}")
