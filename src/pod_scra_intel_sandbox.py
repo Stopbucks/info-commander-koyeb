@@ -1,8 +1,9 @@
 # ---------------------------------------------------------
-# 程式碼：src/pod_scra_intel_sandbox.py (V5.8.2 甜蜜點精準狙擊版)
+# 程式碼：src/pod_scra_intel_sandbox.py (V5.8.3 甜蜜點精準狙擊版)
 # 任務：Groq API 金絲雀影子測試 (Canary Release)
 # 範圍：精準鎖定 14.0MB ~ 24.0MB 區間的無主大檔。
 # 目的：測試純 API 連線穩定度與耗時，不涉及切塊技術。
+# 先撤除過濾條件，測試GROQ逐字稿聽寫
 # ---------------------------------------------------------
 import os, time
 # 🚀 直接從軍械庫呼叫您已經寫好的完美 STT 函式 (內含 whisper-large-v3)
@@ -27,11 +28,10 @@ def run_groq_sandbox_test(sb, s_log_func):
             return
             
         task = None
+
+
         for t in targets:
-            # 🛡️ 防呆：檢查是否已經被沙盒打過了
-            check_res = sb.table("mission_intel").select("intel_status").eq("task_id", t['id']).execute().data
-            if check_res: continue 
-            
+            # 🚀 解除防呆限制：直接拿第一筆符合大小的檔案當靶子！
             task = t
             break
             
