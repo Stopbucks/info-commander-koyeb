@@ -1,7 +1,7 @@
 # ---------------------------------------------------------
-# 程式碼：src/pod_scra_intel_sandbox.py (V5.8.11 絕對防禦拾取版)
+# 程式碼：src/pod_scra_intel_sandbox.py (V5.8.12 絕對防禦拾取 + 版本宣告版)
 # 任務：Groq API 金絲雀影子測試 (Canary Release)
-# 特色：加入強固型 JSON 解析與退匣防護，確保「無論如何都要帶回文字」。
+# 特色：加入明確版本號印出，並具備退匣防護，確保帶回戰利品。
 # ---------------------------------------------------------
 import os, time
 from src.pod_scra_intel_control import get_secrets
@@ -11,8 +11,8 @@ def run_groq_sandbox_test(sb, s_log_func):
     worker_id = os.environ.get("WORKER_ID", "UNKNOWN_NODE")
     
     try:
-        # 🚨 辨識碼更新：用這行字確認新裝甲已上線！
-        s_log_func(sb, "SANDBOX", "INFO", f"🧪 [{worker_id}] 啟動 Groq 絕對防禦拾取測試...")
+        # 🚨 指揮官神機妙算！我們直接在這裡印出超大字體的版本宣告！
+        s_log_func(sb, "SANDBOX", "INFO", f"🧪 [{worker_id}] 【沙盒版本 V5.8.12】啟動 Groq 絕對防禦拾取測試！！！")
         import requests 
         
         s = get_secrets()
@@ -38,7 +38,7 @@ def run_groq_sandbox_test(sb, s_log_func):
                 audio_data = audio_resp.content
                 size_mb = len(audio_data) / (1024 * 1024)
 
-                s_log_func(sb, "SANDBOX", "INFO", f"🎯 檔案下載成功 ({size_mb:.2f}MB)。開始填裝並呼叫 Groq API...")
+                s_log_func(sb, "SANDBOX", "INFO", f"🎯 檔案下載成功 ({size_mb:.2f}MB)。開始呼叫 Groq API...")
 
                 headers = {"Authorization": f"Bearer {groq_key}"}
                 files = {'file': (file_name, audio_data, "audio/ogg")} 
@@ -54,7 +54,7 @@ def run_groq_sandbox_test(sb, s_log_func):
                 
                 if stt_resp.status_code != 200:
                     stt_text = f"[GROQ_API_ERROR] 狀態碼: {stt_resp.status_code}. 伺服器回覆: {stt_resp.text}"
-                    s_log_func(sb, "SANDBOX", "WARNING", f"⚠️ API 狀態異常，已將錯誤訊息帶回 STT_TXT。")
+                    s_log_func(sb, "SANDBOX", "WARNING", f"⚠️ API 狀態異常，已將錯誤訊息帶回。")
                 else:
                     try:
                         # 嘗試標準 JSON 解析
