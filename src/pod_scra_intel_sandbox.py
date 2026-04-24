@@ -1,11 +1,11 @@
 # ---------------------------------------------------------
-# 程式碼：src/pod_scra_intel_sandbox.py (V5.8.6 裸查底層版)
+# 程式碼：src/pod_scra_intel_sandbox.py (V5.8.7 金鑰修復版)
 # 任務：Groq API 金絲雀影子測試 (Canary Release)
-# 策略：直接查詢 mission_queue 底層資料表，無視安全視圖過濾，確保找出靶材。
-# 繞過view資料表格，直取檔案
+# 修正：匯入 get_secrets() 解決 'R2_URL' KeyError 錯誤。
 # ---------------------------------------------------------
 import os, time
 from src.pod_scra_intel_techcore import call_groq_stt
+from src.pod_scra_intel_control import get_secrets # 🚨 新增：匯入金鑰庫
 
 def run_groq_sandbox_test(sb, s_log_func):
     """【沙盒演習】多重靶材輪詢，裸查底層資料表"""
@@ -13,6 +13,9 @@ def run_groq_sandbox_test(sb, s_log_func):
     
     try:
         s_log_func(sb, "SANDBOX", "INFO", f"🧪 [{worker_id}] 啟動 Groq 多重定點狙擊測試 (底層裸查模式)...")
+        
+        # 🚨 領取金鑰
+        s = get_secrets()
         
         # 🎯 標靶清單：依序排列優先權
         TARGET_LIST = [
@@ -26,7 +29,6 @@ def run_groq_sandbox_test(sb, s_log_func):
         for target_r2 in TARGET_LIST:
             if test_completed: break 
                 
-            # 🚨 關鍵突破：將 "vw_safe_mission_queue" 改為 "mission_queue"
             query = sb.table("mission_queue").select("id, r2_url, audio_size_mb, source_name, episode_title") \
                       .eq("r2_url", target_r2).limit(1) 
             
@@ -43,9 +45,9 @@ def run_groq_sandbox_test(sb, s_log_func):
             s_log_func(sb, "SANDBOX", "INFO", f"🎯 鎖定狙擊靶材: {task.get('source_name')} ({size}MB) - {task_id[:8]}")
             
             try:
-                # 🚀 發起實彈射擊
+                # 🚀 發起實彈射擊 (傳入正確的金鑰字典 s)
                 start_time = time.time()
-                stt_text = call_groq_stt(os.environ, r2_url) 
+                stt_text = call_groq_stt(s, r2_url) # 🚨 修正：將 os.environ 改為 s
                 elapsed = time.time() - start_time
                 text_len = len(stt_text)
                 
