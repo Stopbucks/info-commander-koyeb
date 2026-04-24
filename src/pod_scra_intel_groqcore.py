@@ -1,21 +1,25 @@
 # ---------------------------------------------------------
-# 程式碼：src/pod_scra_intel_groqcore.py (Groq B計畫防爆模組)
+# 程式碼：src/pod_scra_intel_groqcore.py (Groq B計畫防爆模組 V2)
 # 任務：處理超長文本的滑動窗口切塊、重疊銜接、防爆休眠與摘要生成
+# 修正：同步使用 Supabase 中央金庫的 GROQ_KEY，確保彈藥充足。
 # ---------------------------------------------------------
 
 import os
 import time
 from groq import Groq
+from src.pod_scra_intel_control import get_secrets # 🚨 新增：從主線金庫引入金鑰功能
 
 class GroqFallbackAgent:
     """
     🛡️ [B計畫特種兵] 專門處理 Groq 的長文本切塊與 API 呼叫
     """
     def __init__(self):
-        # 🚀 初始化 Groq 客戶端
-        api_key = os.environ.get("GROQ_API_KEY")
+        # 🚀 從中央金庫領取 Groq 金鑰
+        s = get_secrets()
+        api_key = s.get("GROQ_KEY") 
+        
         if not api_key:
-            print("⚠️ [Groq 備援] 找不到 GROQ_API_KEY，備援系統處於休眠狀態。")
+            print("⚠️ [Groq 備援] 找不到 GROQ_KEY，備援系統處於休眠狀態。")
         self.client = Groq(api_key=api_key) if api_key else None
         
         # 🚀 設定模型與切塊參數
@@ -24,7 +28,7 @@ class GroqFallbackAgent:
         self.overlap_size = 800  # 前後區塊重疊 800 字元，確保語意不斷層
 
     def _chunk_text_with_overlap(self, text: str):
-        """✂️ [後勤加工] 執行滑動窗口切塊 (Sliding Window Overlap)"""
+        """✂️ [後勤加工] 執行滑動窗口切塊"""
         chunks = []
         start = 0
         text_length = len(text)
