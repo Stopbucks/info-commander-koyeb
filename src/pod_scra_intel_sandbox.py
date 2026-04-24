@@ -11,6 +11,7 @@ def run_groq_sandbox_test(sb, s_log_func):
     worker_id = os.environ.get("WORKER_ID", "UNKNOWN_NODE")
     
     try:
+        # 🚨 辨識碼更新：用這行字確認新裝甲已上線！
         s_log_func(sb, "SANDBOX", "INFO", f"🧪 [{worker_id}] 啟動 Groq 絕對防禦拾取測試...")
         import requests 
         
@@ -32,58 +33,52 @@ def run_groq_sandbox_test(sb, s_log_func):
             target_url = target["url"]
             
             try:
-                # [略過下載步驟日誌以保持簡潔]
                 audio_resp = requests.get(target_url, timeout=60)
                 audio_resp.raise_for_status()
                 audio_data = audio_resp.content
+                size_mb = len(audio_data) / (1024 * 1024)
+
+                s_log_func(sb, "SANDBOX", "INFO", f"🎯 檔案下載成功 ({size_mb:.2f}MB)。開始填裝並呼叫 Groq API...")
 
                 headers = {"Authorization": f"Bearer {groq_key}"}
                 files = {'file': (file_name, audio_data, "audio/ogg")} 
-                # 依然要求 JSON 格式
                 data = {'model': 'whisper-large-v3', 'response_format': 'json', 'language': 'en'}
 
                 start_time = time.time()
                 stt_resp = requests.post("https://api.groq.com/openai/v1/audio/transcriptions", headers=headers, files=files, data=data, timeout=180)
                 
                 # ---------------------------------------------------------
-                # 🛡️ 【絕對防禦拾取區塊】 (日後移植 techcore 必備)
+                # 🛡️ 【絕對防禦拾取區塊】 
                 # ---------------------------------------------------------
                 stt_text = ""
                 
-                # 1. 如果伺服器根本不給 200，但有回傳文字，我們把錯誤訊息當成結果帶回，以利除錯。
                 if stt_resp.status_code != 200:
                     stt_text = f"[GROQ_API_ERROR] 狀態碼: {stt_resp.status_code}. 伺服器回覆: {stt_resp.text}"
-                    # 這裡故意不 raise Exception，而是把錯誤當成文字帶回去
                     s_log_func(sb, "SANDBOX", "WARNING", f"⚠️ API 狀態異常，已將錯誤訊息帶回 STT_TXT。")
-                
                 else:
-                    # 2. 伺服器成功回傳 (200 OK)
                     try:
-                        # 優先嘗試用標準 JSON 解析袋子 (期望格式: {"text": "Hello world..."})
+                        # 嘗試標準 JSON 解析
                         stt_text = stt_resp.json().get('text', '')
                     except Exception as json_err:
-                        # 3. 【退匣防護】萬一 Groq 調皮不給 JSON，給了純字串？
-                        # 絕對不報錯！直接硬生生擷取原始回傳文字 (Raw Text)。
+                        # 🚀 退匣防護：如果 Groq 又不給 JSON，我們直接硬吸原始字串！絕對不報錯！
                         s_log_func(sb, "SANDBOX", "WARNING", f"⚠️ JSON 解析失敗 ({json_err})，啟動退匣防護，直接強制擷取原始字串！")
                         stt_text = stt_resp.text 
                 
-                # 防呆：確保 stt_text 絕對不是 None
                 stt_text = stt_text.strip() if stt_text else "[STT_EMPTY_RESPONSE]"
                 # ---------------------------------------------------------
 
                 elapsed = time.time() - start_time
                 text_len = len(stt_text)
 
-                # 模擬主線：把文字塞回 Supabase (即使是錯誤訊息也塞)
-                # 您可以隨便找一個已知的 task_id 來模擬寫入，或者這一步只是印出即可
-                # sb.table("mission_intel").upsert({...}).execute()
-
                 s_log_func(sb, "SANDBOX", "SUCCESS", f"✅ 拾取大獲全勝！耗時: {elapsed:.1f}s | 字數: {text_len} | 預覽: {stt_text[:50]}...")
                 test_completed = True 
                 
             except Exception as target_err:
-                s_log_func(sb, "SANDBOX", "ERROR", f"❌ 本地處理致命錯誤 (如下載失敗): {str(target_err)}")
+                s_log_func(sb, "SANDBOX", "WARNING", f"⚠️ 靶材 {file_name} 試射失敗: {str(target_err)[:100]}... 切換下一發。")
                 continue
+
+        if not test_completed:
+            s_log_func(sb, "SANDBOX", "ERROR", "❌ 所有標靶皆狙擊失敗或無效。")
 
     except Exception as e:
         s_log_func(sb, "SANDBOX", "ERROR", f"❌ 極簡沙盒系統異常: {str(e)}")
