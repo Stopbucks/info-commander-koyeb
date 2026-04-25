@@ -1,5 +1,5 @@
 # ---------------------------------------------------------
-# src/pod_scra_intel_core.py v6.0 (中型部隊 KOYEB 專用：GROQ 智能閘門與 A/B 備援防禦)
+# src/pod_scra_intel_core.py v6.1 (中型部隊 KOYEB 專用：GROQ 智能閘門與 A/B 備援防禦)
 # 適用部隊：RENDER, KOYEB, ZEABUR
 # 任務：專注於 STT 與 Summary 的核心戰鬥流程。
 # [V5.9.2 更新] 1. 交由 Supabase VIEW (vw_safe_mission_queue) 過濾。 429 絕對防禦：深潛 180~300 秒並強制斷尾。
@@ -8,6 +8,7 @@
 # [V5.9.6 更新] 升級智能大腦閘門：放寬中型機甲壓縮極限至 85MB。
 # [V5.9.7 零信任] 修復軟失敗歸零邏輯，確保成功任務重獲新生，補齊缺失依賴。
 # [V6.0 重大升級] 導入 GROQ 超長訪談聽寫 (>=4MB)，並實裝 GEMINI(A) / GROQ(B) 摘要降級備援策略。
+# [V6.1 新增] GEMINI 429事件後，退階執行第一棒，完成GROQ聽寫任務
 # ---------------------------------------------------------
 
 import os, time, random, gc, traceback, base64, re 
@@ -293,6 +294,36 @@ def run_stt_to_summary_mission(sb=None):
                 else:
                     # 如果手上沒有逐字稿 (GEMINI 原生流)，無備援能力，直接拋出異常交給外層防禦網 (429 深潛等)
                     raise gemini_err
+
+# -----(插入程式碼定位線)以上程式碼相同-----
+
+        except Exception as e:
+            err_str = str(e)
+            print(f"❌ [{worker_id}] 第二棒崩潰: {err_str}")
+            
+            if '429' in err_str or 'quota' in err_str.lower(): 
+                print(f"🔄 [{worker_id}] 遭遇限流，執行斷尾防禦...")
+                
+                # 🚀 [降級重鑄戰術] 簡單化核心
+                # 如果是舊版 GEMINI 原生音訊任務導致 429，將其「時光倒流」回第一棒 (pending)
+                if provider == "GEMINI" and not is_text_transcript:
+                    print(f"⚔️ [{worker_id}] 偵測到舊版高負載任務，啟動降級重鑄 ➡️ 退回第一棒重新分流...")
+                    delete_intel_task(sb, task_id)
+                    sb.table("mission_queue").update({
+                        "scrape_status": "pending", 
+                        "soft_failure_count": current_fails  # 保留失敗次數，讓 FLY 自動避開
+                    }).eq("id", task_id).execute()
+                else:
+                    # 如果是已經有逐字稿的任務還遇到 429，只需退回 Sum.-pre 等下次即可
+                    upsert_intel_status(sb, task_id, "Sum.-pre", provider)
+                    sb.table("mission_queue").update({"soft_failure_count": current_fails}).eq("id", task_id).execute()
+
+                penalty_delay = random.uniform(180.0, 300.0)
+                print(f"⚠️ [{worker_id}] 摘要 API 枯竭！強制深潛 {penalty_delay:.1f} 秒，本輪強制收隊！")
+                time.sleep(penalty_delay)
+                break # 🛑 斷尾求生：確保剩下的任務維持在 Sum.-pre，下次再由雷達撿起
+
+# -----(插入程式碼完畢)以下程式碼相同-----
             
             # 🏆 處理戰利品與發報
             if summary:
