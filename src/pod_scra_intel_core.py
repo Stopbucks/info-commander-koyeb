@@ -158,8 +158,8 @@ def run_audio_to_stt_mission(sb=None):
                 print(f"🛡️ [{worker_id}] 記憶體保護機制觸發：檔案非 opus 格式 ({r2_url})，嚴禁轉譯！跳過。")
                 continue
 
-            # 🎯 智能分流：大於等於 4.0MB 強制使用 GROQ，小於則交給 GEMINI
-            if current_size >= 4.0:
+            # 🎯 智能分流：大於等於 3.0MB 強制使用 GROQ，小於則交給 GEMINI
+            if current_size >= 3.0:
                 chosen_provider = "GROQ"
                 print(f"🎲 [{worker_id}] 戰術分流 -> [{chosen_provider}] (偵測到 {current_size}MB，視為長篇訪談，交由 GROQ 處理)")
             else:
