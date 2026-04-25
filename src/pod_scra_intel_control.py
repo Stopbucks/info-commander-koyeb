@@ -45,8 +45,8 @@ def get_tactical_panel(worker_id):
     medium_panel = {
         "MEM_TIER": 512,
         "RADAR_FETCH_LIMIT": 100,
-        "STT_LIMIT": 3,
-        "SUMMARY_LIMIT": 2,
+        "STT_LIMIT": 4,
+        "SUMMARY_LIMIT": 4,
         "SAFE_DURATION_SECONDS": 1500,
         "CAN_COMPRESS": True,
         "COMPRESS_ONLY": False,
