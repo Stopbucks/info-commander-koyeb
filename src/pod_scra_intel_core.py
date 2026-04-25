@@ -233,4 +233,99 @@ def run_stt_to_summary_mission(sb=None):
     actual_processed = 0
     
     for intel in tasks:
-        if actual_processed
+        if actual_processed >= panel["SUMMARY_LIMIT"]: 
+            print(f"🏁 [{worker_id}] 第二棒已達目標產能 ({panel['SUMMARY_LIMIT']} 件)，交接。")
+            break
+        if time.time() - start_time > panel["SAFE_DURATION_SECONDS"]:
+            print(f"⏱️ [{worker_id}] 摘要產線逼近安全極限 ({panel['SAFE_DURATION_SECONDS']}s)，強制撤退！")
+            break
+            
+        if actual_processed > 0:
+            delay = random.uniform(8.0, 15.0)
+            print(f"⏳ [{worker_id}] 戰術冷卻 {delay:.1f} 秒，等待 API 恢復 Token 池...")
+            time.sleep(delay)
+
+        task_id = intel['task_id']
+        provider = intel['ai_provider']
+        q_data = intel.get('mission_queue') or {}
+        r2_file = str(q_data.get('r2_url') or '').lower()
+        
+        if not r2_file or r2_file == 'null': continue 
+
+        print(f"✍️ [{worker_id}] 啟動摘要產線: {provider} | 任務: {q_data.get('episode_title', '')[:15]}...")
+        p_res = sb.table("pod_scra_metadata").select("content").eq("key_name", "PROMPT_FALLBACK").single().execute()
+        sys_prompt = p_res.data['content'] if p_res.data else "請分析情報。"
+
+        try:
+            summary = ""
+            
+            # 🚀 👇 [第二棒：預佔鎖] 呼叫 API 前，先預佔狀態並 +1 失敗次數
+            print(f"🔒 [{worker_id}] 執行第二棒狀態預佔：標記為 Sum.-proc 並預先增加失敗計數...")
+            upsert_intel_status(sb, task_id, "Sum.-proc", provider)
+            current_fails = q_data.get('soft_failure_count') or 0
+            sb.table("mission_queue").update({"soft_failure_count": current_fails + 1}).eq("id", task_id).execute()
+            # 🚀 👆
+
+            # 🎯 狀態判定：判斷手邊是否有第一棒 GROQ 產生的「純文字逐字稿」
+            is_text_transcript = (provider == "GROQ")
+            
+            # 🎯 統一組裝 GEMINI 提示詞 (A 方案)
+            gemini_prompt = sys_prompt + "\n\n【系統提示】以下提供的素材可能是原始音檔，或者是已經轉譯完成的「純文字逐字稿」。請自行判斷輸入格式，並根據上述指示進行摘要提取。"
+            
+            target_r2_url = q_data.get('r2_url')
+            if is_text_transcript:
+                gemini_prompt += f"\n\n【純文字逐字稿】\n{intel.get('stt_text', '')}"
+                target_r2_url = None # 阻斷連結：如果有逐字稿，切斷傳遞音檔給 Gemini，避免觸發大檔限制與浪費傳輸時間
+            
+            try:
+                print(f"🚀 [{worker_id}] [A 方案] 優先呼叫 GEMINI 執行摘要...")
+                # 統一交給 GEMINI，它會根據 target_r2_url (有無音檔) 與 gemini_prompt (有無文字) 自動判斷
+                summary = call_gemini_summary(s, target_r2_url, gemini_prompt)
+                
+            except Exception as gemini_err:
+                print(f"⚠️ [{worker_id}] GEMINI 摘要遭遇阻礙 ({str(gemini_err)[:50]})...")
+                
+                # 🛡️ 啟落 B 方案備援
+                if is_text_transcript:
+                    print(f"🛡️ [{worker_id}] [B 方案] 啟動 GROQ 備援摘要產線...")
+                    groq_agent = GroqFallbackAgent()
+                    summary = groq_agent.generate_summary(intel.get('stt_text', ''), sys_prompt)
+                else:
+                    # 如果手上沒有逐字稿 (GEMINI 原生流)，無備援能力，直接拋出異常交給外層防禦網 (429 深潛等)
+                    raise gemini_err
+            
+            # 🏆 處理戰利品與發報
+            if summary:
+                metrics = parse_intel_metrics(summary)
+                send_tg_report(s, q_data.get('source_name', '未知'), q_data.get('episode_title', '未知'), summary, sb, worker_id)
+                
+                # 💡 [V5.9.7 零信任修復] 任務成功！將軟失敗直接歸 0，並更新狀態為已發送結案
+                sb.table("mission_queue").update({"soft_failure_count": 0}).eq("id", task_id).execute()
+                update_intel_success(sb, task_id, summary, metrics["score"])
+                print(f"🎉 [{worker_id}] 戰報發送成功，摘要已安全結案！")
+                actual_processed += 1 
+
+        except Exception as e:
+            err_str = str(e)
+            print(f"❌ [{worker_id}] 第二棒崩潰: {err_str}")
+            
+            if '429' in err_str or 'quota' in err_str.lower(): 
+                print(f"🔄 [{worker_id}] 遭遇限流，退回任務狀態，解除預佔鎖...")
+                upsert_intel_status(sb, task_id, "Sum.-pre", provider)
+                sb.table("mission_queue").update({"soft_failure_count": current_fails}).eq("id", task_id).execute()
+
+                penalty_delay = random.uniform(180.0, 300.0)
+                print(f"⚠️ [{worker_id}] 摘要 API 枯竭！強制深潛 {penalty_delay:.1f} 秒，放棄後續任務以保護 Token 池！")
+                time.sleep(penalty_delay)
+                break 
+                
+            elif '404' in err_str and 'Not Found' in err_str:
+                print(f"🕳️ [{worker_id}] 踩到 404 炸彈！抹除紀錄退回物流。")
+                delete_intel_task(sb, task_id)
+                sb.table("mission_queue").update({"r2_url": None, "scrape_status": "pending"}).eq("id", task_id).execute()
+            
+            else:
+                print(f"🔄 [{worker_id}] 任務異常，保留失敗標記，等待下次重試。")
+        
+        finally:
+            gc.collect()
