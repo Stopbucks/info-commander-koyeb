@@ -5,7 +5,7 @@
 #       3. [火力] 封裝 Supabase 讀寫、REST API 呼叫與 TG 戰報。
 # [V5.9.2 保留] Gemini 手刻 API 加裝起飛前安檢與錯誤黑盒子 (無 SDK 依賴)。
 # [V5.9.5 更新] 核心連線套件全面升級為 curl_cffi，提升 HTTP/2 連線穩定度。
-# [V6.0   更新] 採用GROQ執行長訪談逐字稿，交GEMINI摘要 
+# [V6.0   更新] 採用GROQ執行長訪談逐字稿，交GEMINI摘要。輕裝游擊隊(FLY)加裝防禦網。
 # 適用：RENDER, KOYEB, ZEABUR (純 REST 輕快版，無 SDK 依賴)
 # ---------------------------------------------------------
 import base64, re, gc
@@ -31,8 +31,10 @@ def fetch_stt_tasks(sb, mem_tier, worker_id="UNKNOWN", fetch_limit=50):
 
     # 🚀 動態分流：根據硬體配置決定拿取任務的策略
     if mem_tier < 512:
-        # 🏹 輕裝游擊隊 (如 FLY)：安全第一，只拿 15MB 以下的 Opus，從最小的開始拿
-        query = query.gte("audio_size_mb", 0).ilike("r2_url", "%.opus").lt("audio_size_mb", 15) \
+        # 🏹 輕裝游擊隊 (如 FLY)：安全第一。
+        # 追加防禦：絕對不碰曾經失敗過 (soft_failure_count > 0) 的任務，防止連續 OOM 崩潰！
+        query = query.gte("audio_size_mb", 0).ilike("r2_url", "%.opus") \
+                     .lt("audio_size_mb", 15).eq("soft_failure_count", 0) \
                      .order("audio_size_mb", desc=False)
                      
     elif worker_id in ["HUGGINGFACE", "AUDIO_EAT", "RAILWAY"]:
@@ -76,13 +78,17 @@ def fetch_summary_tasks(sb, fetch_limit=50):
     import os 
     worker_id = os.environ.get("WORKER_ID", "UNKNOWN")
     
-    # 💡 擴充查詢：利用 Foreign Key 從 mission_queue 關聯帶出標題、來源與檔案大小
-    query = sb.table("mission_intel").select("*, mission_queue(episode_title, source_name, r2_url, audio_size_mb)").eq("intel_status", "Sum.-pre")
+    # 💡 擴充查詢：加入 soft_failure_count 以供輕裝游擊隊過濾
+    query = sb.table("mission_intel").select("*, mission_queue(episode_title, source_name, r2_url, audio_size_mb, soft_failure_count)").eq("intel_status", "Sum.-pre")
     
     # 🚀 絕對物理防線：中/輕型機甲，配合 GROQ 升級，放寬至撿取 30MB 以下的大檔！
     if worker_id not in ["HUGGINGFACE", "DBOS", "AUDIO_EAT", "RAILWAY"]:
         # 透過外鍵關聯 (mission_queue.audio_size_mb) 直接在資料庫底層進行數值過濾
         query = query.lte("mission_queue.audio_size_mb", 30)
+        
+        # 🛡️ 輕裝游擊隊 (FLY) 的第二道防線：摘要階段同樣不碰曾經失敗過的任務
+        if worker_id == "FLY_LAX" or int(os.environ.get("MEM_TIER", 1024)) < 512:
+            query = query.eq("mission_queue.soft_failure_count", 0)
 
     return query.order("created_at").limit(fetch_limit).execute().data or []
 
