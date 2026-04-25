@@ -149,7 +149,21 @@ def call_groq_stt(secrets, r2_url_path):
     
     # 發送給 API
     stt_resp = requests.post("https://api.groq.com/openai/v1/audio/transcriptions", headers=headers, files=files, data=data, timeout=120)
+
+
+    headers = {"Authorization": f"Bearer {secrets['GROQ_KEY']}"}
+    files = {'file': (r2_url_path, audio_data, m_type)}
+    data = {'model': 'whisper-large-v3', 'response_format': 'text', 'language': 'en'}
     
+    # 🚀 換裝防護：Groq 官方 API 無需偽裝，改用已配發的 httpx 進行標準表單上傳，避開 curl_cffi 限制
+    import httpx
+    with httpx.Client(timeout=120.0) as client:
+        stt_resp = client.post(
+            "https://api.groq.com/openai/v1/audio/transcriptions", 
+            headers=headers, files=files, data=data
+        )
+
+
     # 🧹 記憶體防護：確保釋放二進位龐大資源，防止 OOM
     del audio_data, files, resp; gc.collect()
     
