@@ -231,30 +231,43 @@ def run_stt_to_summary_mission(sb=None):
         q_data = intel.get('mission_queue') or {}
         r2_file = str(q_data.get('r2_url') or '').lower()
         
+
+
         if not r2_file or r2_file == 'null': continue 
 
         print(f"✍️ [{worker_id}] 啟動摘要產線: {provider} | 任務: {q_data.get('episode_title', '')[:15]}...")
-        p_res = sb.table("pod_scra_metadata").select("content").eq("key_name", "PROMPT_FALLBACK").single().execute()
-        sys_prompt = p_res.data['content'] if p_res.data else "請分析情報。"
+        
+        # 🚀 [效能優化] 透過 in_ 語法，單次連線同時取回「主提示詞」與「去廣告濾鏡」
+        p_res = sb.table("pod_scra_metadata").select("key_name, content").in_("key_name", ["PROMPT_FALLBACK", "PROMPT_ANTI_AD"]).execute()
+        prompts = {item['key_name']: item['content'] for item in p_res.data} if p_res.data else {}
+        
+        sys_prompt = prompts.get("PROMPT_FALLBACK", "請分析情報。")
+        anti_ad_prompt = prompts.get("PROMPT_ANTI_AD", "請過濾廣告。")
 
         try:
             summary = ""
             
-            # 🚀 執行預佔鎖
+            # 🚀 👇 [第二棒：預佔鎖] 呼叫 API 前，先預佔狀態並 +1 失敗次數
             print(f"🔒 [{worker_id}] 執行第二棒狀態預佔：標記為 Sum.-proc 並預先增加失敗計數...")
             upsert_intel_status(sb, task_id, "Sum.-proc", provider)
             current_fails = q_data.get('soft_failure_count') or 0
             sb.table("mission_queue").update({"soft_failure_count": current_fails + 1}).eq("id", task_id).execute()
+            # 🚀 👆
 
+            # 🎯 狀態判定：判斷手邊是否有第一棒 GROQ 產生的「純文字逐字稿」
             is_text_transcript = (provider == "GROQ")
-            
-            gemini_prompt = sys_prompt + "\n\n【系統提示】以下提供的素材可能是原始音檔，或者是已經轉譯完成的「純文字逐字稿」。請自行判斷輸入格式，並根據上述指示進行摘要提取。"
-            
             target_r2_url = q_data.get('r2_url')
-            if is_text_transcript:
-                gemini_prompt += f"\n\n【純文字逐字稿】\n{intel.get('stt_text', '')}"
-                target_r2_url = None # 阻斷音檔傳遞
             
+            if is_text_transcript:
+                # 🛡️ 啟動純文字防禦網：掛載資料庫抓取的「去廣告與來賓標示濾鏡」
+                gemini_prompt = sys_prompt + f"\n\n{anti_ad_prompt}\n\n【純文字逐字稿】\n{intel.get('stt_text', '')}"
+                target_r2_url = None # 阻斷音檔傳遞
+            else:
+                # 🎙️ 原生音訊流：以簡潔指令引導原生多模態過濾廣告
+                gemini_prompt = sys_prompt + "\n\n【系統提示】以下提供的是原始音檔。請仔細聆聽並運用邏輯判斷力，自動將「贊助商廣告、產品推銷」等干擾資訊過濾掉，根據指示提取摘要。"
+
+
+                        
             try:
                 print(f"🚀 [{worker_id}] [A 方案] 優先呼叫 GEMINI 執行摘要...")
                 summary = call_gemini_summary(s, target_r2_url, gemini_prompt)
