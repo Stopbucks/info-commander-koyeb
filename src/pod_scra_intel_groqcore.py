@@ -1,13 +1,14 @@
 # ---------------------------------------------------------
-# 程式碼：src/pod_scra_intel_groqcore.py (Groq B計畫防爆模組 V2)
+# 程式碼：src/pod_scra_intel_groqcore.py (Groq B計畫防爆模組 V2.1)
 # 任務：處理超長文本的滑動窗口切塊、重疊銜接、防爆休眠與摘要生成
-# 修正：同步使用 Supabase 中央金庫的 GROQ_KEY，確保彈藥充足。
+# 修正：1. 同步使用 Supabase 中央金庫的 GROQ_KEY。
+#       2. [V2.1] 拔除虛假勝利邏輯，遇錯立即拋出異常請求上級換裝。
 # ---------------------------------------------------------
 
 import os
 import time
 from groq import Groq
-from src.pod_scra_intel_control import get_secrets # 🚨 新增：從主線金庫引入金鑰功能
+from src.pod_scra_intel_control import get_secrets
 
 class GroqFallbackAgent:
     """
@@ -22,13 +23,13 @@ class GroqFallbackAgent:
             print("⚠️ [Groq 備援] 找不到 GROQ_KEY，備援系統處於休眠狀態。")
         self.client = Groq(api_key=api_key) if api_key else None
         
-        # 🚀 設定模型與切塊參數
+        # 設定模型與切塊參數，確保不超過 TPM 限制
         self.model_name = "llama-3.3-70b-versatile"
-        self.chunk_size = 15000  # 每個區塊最大字元數 (約 5000 Tokens，絕對安全)
-        self.overlap_size = 800  # 前後區塊重疊 800 字元，確保語意不斷層
+        self.chunk_size = 15000  
+        self.overlap_size = 800  
 
     def _chunk_text_with_overlap(self, text: str):
-        """✂️ [後勤加工] 執行滑動窗口切塊"""
+        """✂️ 執行滑動窗口切塊，保留前後文重疊區間"""
         chunks = []
         start = 0
         text_length = len(text)
@@ -44,7 +45,7 @@ class GroqFallbackAgent:
         return chunks
 
     def generate_summary(self, long_text: str, original_prompt: str):
-        """🧠 [核心戰技] 分塊處理長文本，並組合最終摘要"""
+        """🧠 分塊處理長文本，並組合最終摘要"""
         if not self.client:
             return "❌ [Groq 備援] 系統未初始化，無法執行 B 計畫。"
 
@@ -57,6 +58,7 @@ class GroqFallbackAgent:
         for idx, chunk_text in enumerate(chunks):
             print(f"🧩 正在呼叫 Groq 處理第 {idx + 1}/{total_chunks} 塊...")
             
+            # 針對首塊與接續區塊給予不同的邏輯指引
             if idx == 0:
                 system_instruction = (
                     f"以下是一份長篇音訊轉譯稿的「第一部分」。\n"
@@ -87,10 +89,11 @@ class GroqFallbackAgent:
                 print(f"✅ 第 {idx + 1} 塊處理成功。")
                 
             except Exception as e:
-                print(f"❌ [Groq 戰損] 第 {idx + 1} 塊處理失敗: {e}")
-                final_summary += f"\n\n[⚠️ 系統提示：第 {idx + 1} 塊內容解析失敗]\n\n"
+                # 🚀 拋出異常，阻斷虛假勝利，交由 core.py 接手升級 C 方案
+                print(f"❌ [Groq 戰損] 第 {idx + 1} 塊處理失敗，請求上級執行升級備援...")
+                raise e
 
-            # ⏳ 巨觀避震：若不是最後一塊，強制休眠 65 秒清洗 Token 桶
+            # 若不是最後一塊，強制休眠清洗 Token 桶以防 429
             if idx < total_chunks - 1:
                 print("⏳ [冷卻防禦] 進入 65 秒戰術休眠，規避 TPM 12000 限制...")
                 time.sleep(65)
