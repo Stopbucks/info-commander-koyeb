@@ -160,14 +160,17 @@ def call_gemini_summary(secrets, r2_url_path, sys_prompt):
         err_msg = ai_resp.text[:200] 
         raise Exception(f"Gemini API 拒絕存取 (HTTP {ai_resp.status_code}): {err_msg}")
 
-def send_tg_report(secrets, source, title, summary, sb=None, worker_id="UNKNOWN"):
+def send_tg_report(secrets, source, title, summary, sb=None, worker_id="UNKNOWN", provider="AUTO"):
     safe_summary = summary[:3800] + ("...\n(因字數限制截斷)" if len(summary) > 3800 else "")
     safe_source = str(source).replace("_", "＿").replace("*", "＊").replace("[", "〔").replace("]", "〕").replace("`", "‵")
     safe_title = str(title).replace("_", "＿").replace("*", "＊").replace("[", "〔").replace("]", "〕").replace("`", "‵")
-    report_msg = f"🎙️ *{safe_source}*\n📌 *{safe_title}*\n\n{safe_summary}"
+    
+    # 💡 組合 TG 訊息時，新增一行顯示 provider (AI 供應商)
+    report_msg = f"🎙️ *{safe_source}*\n📌 *{safe_title}*\n🧠 *戰術核心*: {provider}\n\n{safe_summary}"
     
     url = f"https://api.telegram.org/bot{secrets['TG_TOKEN']}/sendMessage"
     payload = {"chat_id": secrets["TG_CHAT"], "text": report_msg, "parse_mode": "Markdown"}
+
     
     try:
         resp = requests.post(url, json=payload, timeout=15)
