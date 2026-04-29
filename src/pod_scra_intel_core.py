@@ -283,21 +283,27 @@ def run_stt_to_summary_mission(sb=None):
                 # 🎙️ 原生音訊流：以簡潔指令引導原生多模態過濾廣告
                 gemini_prompt = sys_prompt + "\n\n【系統提示】以下提供的是原始音檔。請仔細聆聽並運用邏輯判斷力，自動將「贊助商廣告、產品推銷」等干擾資訊過濾掉，根據指示提取摘要。"
 
+
+
             # ---------------------------------------------------------
             # 🛡️ [核心決策] 根據失敗次數與「文本長度」決定摘要執行方案
             # ---------------------------------------------------------
             stt_content = intel.get('stt_text', '')
             stt_len = len(stt_content) if stt_content else 0
+            
+            current_active_provider = "" # 👈 建立紀錄變數 (每次迴圈皆會重置，極度安全)
 
             # 🚀 條件：失敗 2 次以上，或者字數超過 3 萬字 (直接規避 GROQ 死亡輪迴與 GEMINI 429)
             if current_fails >= 2 or stt_len > 30000:
                 print(f"🚀 [{worker_id}] [C 方案] 觸發重裝條件 (失敗: {current_fails}, 字數: {stt_len})，啟動 NVIDIA 終極摘要產線...")
                 nv_agent = NvidiaAgent()
                 summary = nv_agent.call_nvidia_summary(stt_content, sys_prompt)
+                current_active_provider = "NVIDIA" # 👈 標記
             else:
                 try:
                     print(f"🚀 [{worker_id}] [A 方案] 優先呼叫 GEMINI 執行摘要 (字數: {stt_len})...")
                     summary = call_gemini_summary(s, target_r2_url, gemini_prompt)
+                    current_active_provider = "GEMINI" # 👈 標記
                     
                 except Exception as gemini_err:
                     print(f"⚠️ [{worker_id}] GEMINI 摘要遭遇阻礙 ({str(gemini_err)[:50]})...")
@@ -307,12 +313,14 @@ def run_stt_to_summary_mission(sb=None):
                         print(f"🛡️ [{worker_id}] [B 方案] 啟動 GROQ 備援摘要產線 (字數: {stt_len})...")
                         groq_agent = GroqFallbackAgent()
                         summary = groq_agent.generate_summary(stt_content, sys_prompt)
+                        current_active_provider = "GROQ" # 👈 標記
                     else:
                         raise gemini_err
             
             if summary:
                 metrics = parse_intel_metrics(summary)
-                send_tg_report(s, q_data.get('source_name', '未知'), q_data.get('episode_title', '未知'), summary, sb, worker_id)
+                # 🚀 呼叫發報時，帶入這個 current_active_provider 變數
+                send_tg_report(s, q_data.get('source_name', '未知'), q_data.get('episode_title', '未知'), summary, sb, worker_id, provider=current_active_provider)
                 
                 # 任務成功歸 0
                 sb.table("mission_queue").update({"soft_failure_count": 0}).eq("id", task_id).execute()
