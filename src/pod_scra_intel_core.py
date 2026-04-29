@@ -1,5 +1,5 @@
 # ---------------------------------------------------------
-# src/pod_scra_intel_core.py v6.2 (大部隊 KOYEB 終極版：A/B/C 三段變速防禦系統)
+# src/pod_scra_intel_core.py v6.3 (大部隊 KOYEB 終極版：A/B/C 三段變速防禦系統)
 # 適用部隊：RENDER, KOYEB, ZEABUR
 # 任務：專注於 STT 與 Summary 的核心戰鬥流程。
 # [V5.9.2 更新] 1. 交由 Supabase VIEW (vw_safe_mission_queue) 過濾。 429 絕對防禦：深潛 180~300 秒並強制斷尾。
@@ -10,6 +10,7 @@
 # [V6.0 重大升級] 導入 GROQ 超長訪談聽寫 (>=3MB)，並實裝 429 降級重鑄斷尾策略。
 # [V6.1] 新增去廣告濾鏡 (in_ 雙取機制) 與 FLY 防呆掛載。
 # [V6.2] 實裝 NVIDIA Plan C 終極接管，根據 soft_failure_count 自動換裝。
+# [V6.3] 超過3萬字的任務，直接找NVDIA進行摘要
 # ---------------------------------------------------------
 
 import os, time, random, gc, traceback, base64, re 
@@ -255,7 +256,7 @@ def run_stt_to_summary_mission(sb=None):
 
         print(f"✍️ [{worker_id}] 啟動摘要產線: {provider} | 任務: {q_data.get('episode_title', '')[:15]}...")
         
-        # 從資料庫雙取主提示詞與去廣告濾鏡
+        # 🚀 [效能優化] 透過 in_ 語法，單次連線同時取回「主提示詞」與「去廣告濾鏡」
         p_res = sb.table("pod_scra_metadata").select("key_name, content").in_("key_name", ["PROMPT_FALLBACK", "PROMPT_ANTI_AD"]).execute()
         prompts = {item['key_name']: item['content'] for item in p_res.data} if p_res.data else {}
         
@@ -265,37 +266,47 @@ def run_stt_to_summary_mission(sb=None):
         try:
             summary = ""
             
-            # 預佔鎖與失敗次數 +1
+            # 🚀 👇 [第二棒：預佔鎖] 呼叫 API 前，先預佔狀態並 +1 失敗次數
             print(f"🔒 [{worker_id}] 執行第二棒狀態預佔：標記為 Sum.-proc 並預先增加失敗計數...")
             upsert_intel_status(sb, task_id, "Sum.-proc", provider)
             sb.table("mission_queue").update({"soft_failure_count": current_fails + 1}).eq("id", task_id).execute()
 
+            # 🎯 狀態判定：只要是 GROQ 或 NVIDIA 產生，都是「純文字逐字稿」
             is_text_transcript = (provider in ["GROQ", "NVIDIA"])
             target_r2_url = q_data.get('r2_url')
             
             if is_text_transcript:
+                # 🛡️ 啟োট純文字防禦網：掛載資料庫抓取的「去廣告與來賓標示濾鏡」
                 gemini_prompt = sys_prompt + f"\n\n{anti_ad_prompt}\n\n【純文字逐字稿】\n{intel.get('stt_text', '')}"
-                target_r2_url = None 
+                target_r2_url = None # 阻斷音檔傳遞
             else:
+                # 🎙️ 原生音訊流：以簡潔指令引導原生多模態過濾廣告
                 gemini_prompt = sys_prompt + "\n\n【系統提示】以下提供的是原始音檔。請仔細聆聽並運用邏輯判斷力，自動將「贊助商廣告、產品推銷」等干擾資訊過濾掉，根據指示提取摘要。"
 
-            # 🛡️ [核心決策] 根據失敗次數執行摘要升級計畫
-            if current_fails >= 2:
-                print(f"🚀 [{worker_id}] [C 方案] 啟動 NVIDIA 終極摘要產線 (大胃口模式)...")
+            # ---------------------------------------------------------
+            # 🛡️ [核心決策] 根據失敗次數與「文本長度」決定摘要執行方案
+            # ---------------------------------------------------------
+            stt_content = intel.get('stt_text', '')
+            stt_len = len(stt_content) if stt_content else 0
+
+            # 🚀 條件：失敗 2 次以上，或者字數超過 3 萬字 (直接規避 GROQ 死亡輪迴與 GEMINI 429)
+            if current_fails >= 2 or stt_len > 30000:
+                print(f"🚀 [{worker_id}] [C 方案] 觸發重裝條件 (失敗: {current_fails}, 字數: {stt_len})，啟動 NVIDIA 終極摘要產線...")
                 nv_agent = NvidiaAgent()
-                summary = nv_agent.call_nvidia_summary(intel.get('stt_text', ''), sys_prompt)
+                summary = nv_agent.call_nvidia_summary(stt_content, sys_prompt)
             else:
                 try:
-                    print(f"🚀 [{worker_id}] [A 方案] 優先呼叫 GEMINI 執行摘要...")
+                    print(f"🚀 [{worker_id}] [A 方案] 優先呼叫 GEMINI 執行摘要 (字數: {stt_len})...")
                     summary = call_gemini_summary(s, target_r2_url, gemini_prompt)
                     
                 except Exception as gemini_err:
                     print(f"⚠️ [{worker_id}] GEMINI 摘要遭遇阻礙 ({str(gemini_err)[:50]})...")
                     
+                    # 🛡️ 啟動 B 方案備援
                     if is_text_transcript:
-                        print(f"🛡️ [{worker_id}] [B 方案] 啟動 GROQ 備援摘要產線...")
+                        print(f"🛡️ [{worker_id}] [B 方案] 啟動 GROQ 備援摘要產線 (字數: {stt_len})...")
                         groq_agent = GroqFallbackAgent()
-                        summary = groq_agent.generate_summary(intel.get('stt_text', ''), sys_prompt)
+                        summary = groq_agent.generate_summary(stt_content, sys_prompt)
                     else:
                         raise gemini_err
             
@@ -316,21 +327,23 @@ def run_stt_to_summary_mission(sb=None):
             if '429' in err_str or 'quota' in err_str.lower() or 'rate_limit' in err_str.lower(): 
                 print(f"🔄 [{worker_id}] 遭遇限流，執行斷尾防禦...")
                 
+                # 🚀 [降級重鑄戰術] 如果是舊版 GEMINI 原生音訊任務導致 429，將其退回第一棒 (pending) 重新交由 GROQ 聽寫
                 if provider == "GEMINI" and not is_text_transcript:
                     print(f"⚔️ [{worker_id}] 偵測到舊版高負載任務，啟動降級重鑄 ➡️ 退回第一棒重新由 GROQ 聽寫...")
                     delete_intel_task(sb, task_id)
                     sb.table("mission_queue").update({
                         "scrape_status": "pending", 
-                        "soft_failure_count": current_fails
+                        "soft_failure_count": current_fails # 💡 保持當前失敗次數，讓系統下次能觸發備援
                     }).eq("id", task_id).execute()
                 else:
+                    # 純文字任務被限流，保留狀態等下次
                     upsert_intel_status(sb, task_id, "Sum.-pre", provider)
                     sb.table("mission_queue").update({"soft_failure_count": current_fails}).eq("id", task_id).execute()
 
                 penalty_delay = random.uniform(180.0, 300.0)
                 print(f"⚠️ [{worker_id}] 摘要 API 枯竭！強制深潛 {penalty_delay:.1f} 秒，本輪強制收隊！")
                 time.sleep(penalty_delay)
-                break 
+                break # 🛑 斷尾求生
             
             elif '404' in err_str and 'Not Found' in err_str:
                 print(f"🕳️ [{worker_id}] 踩到 404 炸彈！抹除紀錄退回物流。")
