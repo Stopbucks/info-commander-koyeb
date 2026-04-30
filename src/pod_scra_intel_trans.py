@@ -1,25 +1,17 @@
 # ---------------------------------------------------------
-# 程式碼：src/pod_scra_intel_trans.py  (V5.9 變速箱_面板統御_裝甲防線版)
+# 程式碼：src/pod_scra_intel_trans.py  (V5.9.2 變速箱_面板統御_裝甲防線版)
 # [節拍] 狀態機邏輯：透過 MAX_TICKS 控制循環。若主將設為 3 拍，則依序執行 [1:下載, 2:摘要, 3:轉譯]。
 # [節拍] 判斷公式：利用除以 2 的餘數 (current_tick % 2 != 0) 來動態交替分配任務型態。
 # [節拍] 任務分配：單數拍 (1, 3, 5...) 執行轉譯 (STT)；雙數拍 (2, 4, 6...) 執行摘要 (Summary)。
 # [變速箱] IDLE_GEARBOX: 隱蔽變速箱。控制非值勤機甲的降速齒輪比。預設 3.0 代表巡邏週期拉長 3 倍 
 
 # [主將範例] FLY 為主將 (MAX=12)：僅在「第 1 拍」出門抓音檔，第 2~12 拍交替做摘要與轉譯 (低頻進貨)。
-# [主將範例] RENDER 為主將 (MAX=6)：同樣在「第 1 拍」抓音檔，第 2~6 拍做摘要與轉譯 (高頻進貨)。
 # [後勤範例] 若身分為「後勤兵」：完全不管 MAX 是多少，【永遠不出門抓檔】，只專心交替做轉譯與摘要。
-# [節拍總結] MAX_TICKS 的大小，實質上決定了「主將多久出門進貨一次」的冷卻週期。
-# [防禦] 穩健進貨：放寬至 limit(2)，並配備雙重 Jitter 擬人化延遲。 搭配修正5.
 # [隱蔽] 導入 camouflage 千面人模組，透過機甲基因種子達成每日一致性偽裝。
 
-# 修正：1. 徹底拔除 audio_officers 與冗餘的傳入參數，避免呼叫崩潰。
-# 2. 將 max_ticks 交由 src.pod_scra_intel_control 面板動態管理，落實低耦合。
-# 3. [T2 敗戰轉移] 遭遇 403/401 封鎖時，自動將任務降級為 pending (冰封10天)並標記 T1_RESCUE。
-# 4. [黃金救援期] 推遲 troop2_start_at 7 天，完美錯開 T2 雷達，精準移交 T1 數位人格處理。
-# 5. 下載檔案放大至50M，相關設定:timeout=180s, 切片 3MB, 喘息 0.5s
-# 6. [V5.9 裝甲] 打卡機制前移：在執行重型任務前，先將 current_tick 寫入 DB，防止 OOM 導致無限輪迴。
-# ---------------------------------------------------------
-# [隱蔽] 導入 camouflage 千面人模組，透過身分旗標精準配發迷彩。
+# [V5.9 裝甲] 打卡機制前移：在執行重型任務前，先將 current_tick 寫入 DB，防止 OOM 導致無限輪迴。
+# [V5.9.1 裝甲] 導入下載軟失敗 (dl_soft_failure_count) 與 AppleCoreMedia 擬真探測協定。
+# [V5.9.2 編裝] 將 GITHUB 晉升為重裝兵，與 HUGGINGFACE 共同承接 dl_heavy_only 任務。
 # ---------------------------------------------------------
 
 import os, time, random, gc, json
@@ -59,8 +51,7 @@ def execute_fortress_stages(sb, config, s_log_func):
     s_log_func(sb, "STATE_M", "INFO", f"⚙️ [戰略狀態機] 身分: {role_name} | 階段節拍: {current_tick} / {max_ticks}")
 
     # =====================================================================
-    # 👇👇👇 V5.9 關鍵防禦升級：將打卡動作「提前」到執行重型任務之前 👇👇👇
-    # 目的：即使稍後下載超時被平台強制關機，節拍也已經安全推進，打破無限輪迴！
+    # V5.9 關鍵防禦升級：將打卡動作「提前」到執行重型任務之前
     # =====================================================================
     w_status[tick_key] = current_tick
     health = tactic.get('workers_health', {})
@@ -70,20 +61,19 @@ def execute_fortress_stages(sb, config, s_log_func):
         "workers_health": health, 
         "worker_status": w_status
     }).eq("id", 1).execute()
-    # 👆👆👆 ========================================================= 👆👆👆
 
     from src.pod_scra_intel_core import run_audio_to_stt_mission, run_stt_to_summary_mission
 
     # 🛡️ 接下來再開始執行高風險的耗時任務
     # 只要是「第 1 拍」，全軍皆可出門！但依據身分給予不同載重量。
     if current_tick == 1:
-        dl_limit = 2 if is_duty_officer else 1  # 👈 主將拿 2 個，後勤兵低調只拿 1 個
+        dl_limit = 2 if is_duty_officer else 1  # 主將拿 2 個，後勤兵低調只拿 1 個
         s_log_func(sb, "STATE_M", "INFO", f"{role_name} 執行階段 1/{max_ticks}: 外部走私下載 (上限 {dl_limit} 筆)")
         
         rule_res = sb.table("pod_scra_rules").select("domain").in_("worker_id", [worker_id, "ALL"]).gte("expired_at", now_iso).execute()
         my_blacklist = [r['domain'] for r in rule_res.data] if rule_res.data else []
         
-        # 🚀 修正：將上限 dl_limit 以及 身分旗標(is_duty_officer) 傳入物流引擎
+        # 🚀 傳入上限 dl_limit 以及 身分旗標(is_duty_officer) 供物流引擎調度
         run_logistics_engine(sb, config, now_iso, s_log_func, my_blacklist, dl_limit, is_duty_officer) 
     
     # 轉譯與摘要交替執行 (單數拍 STT, 雙數拍 Summary)
@@ -94,17 +84,21 @@ def execute_fortress_stages(sb, config, s_log_func):
         s_log_func(sb, "STATE_M", "INFO", f"{role_name} 啟動摘要發報 (由面板接管)")
         run_stt_to_summary_mission(sb) 
 
-# 🚀 修正：接收 is_duty_officer 參數
 def run_logistics_engine(sb, config, now_iso, s_log_func, my_blacklist, dl_limit=2, is_duty_officer=True):
-    # 🛡️ 為了尋找「不同網域」的目標，我們先拿多一點候選清單 (limit 10)
-    query = sb.table("mission_queue").select("*, mission_program_master(*)").eq("scrape_status", "success").is_("r2_url", "null").lte("troop2_start_at", now_iso).order("created_at", desc=True)\
+    worker_id = config.get('WORKER_ID', 'UNKNOWN')
+    
+    # 🚀 [V5.9.2 編裝升級] 將 GITHUB 納入重裝部隊
+    HEAVY_ARMORS = ["HUGGINGFACE", "GITHUB"]
+    allowed_statuses = ["success", "dl_heavy_only"] if worker_id in HEAVY_ARMORS else ["success"]
+
+    # 🛡️ 雷達分流：輕裝兵只看 success，重裝部隊兼看 dl_heavy_only
+    query = sb.table("mission_queue").select("*, mission_program_master(*)").in_("scrape_status", allowed_statuses).is_("r2_url", "null").lte("troop2_start_at", now_iso).order("created_at", desc=True)\
         .limit(10)  
     tasks = query.execute().data or []
     if not tasks: return
     
     s3 = get_s3_client()
     bucket = os.environ.get("R2_BUCKET_NAME")
-    worker_id = config.get('WORKER_ID', 'UNKNOWN')
     
     time.sleep(random.uniform(2.0, 5.0))
     
@@ -133,39 +127,60 @@ def run_logistics_engine(sb, config, now_iso, s_log_func, my_blacklist, dl_limit
         ext = os.path.splitext(urlparse(f_url).path)[1] or ".mp3"
         tmp_path = f"/tmp/dl_{m['id'][:8]}{ext}"
         
+        # 🚀 讀取當前下載軟失敗次數
+        current_dl_fails = m.get('dl_soft_failure_count', 0)
+        
+        # 提取節目資訊以供情報分析
+        prog_info = f"{m.get('source_name', '未知')} - {m.get('episode_title', '未知')[:15]}..."
 
         try:
-
             # 🚀 核心擬態：向迷彩庫申請【成套】動態偽裝
             camo_gear = get_tactical_camouflage(worker_id, is_duty_officer)
             dynamic_headers = camo_gear["headers"]
             tls_fingerprint = camo_gear["impersonate"]
             
-            # 🚀 戰術升級：使用動態配對的 TLS 指紋啟動 Session，達成表裡一致
             with requests.Session(impersonate=tls_fingerprint) as session:
-                # 💡 拆除 __enter__ 炸彈：不使用 with，改為直接賦值
-                r = session.get(f_url, stream=True, timeout=180, headers=dynamic_headers)
+                
+                # 🍎 [核心戰術] 針對曾被「滴水戰術」拖延的目標，啟動 AppleCoreMedia 擬真探測
+                if current_dl_fails == 1:
+                    s_log_func(sb, "DOWNLOAD", "INFO", f"🍎 [{worker_id}] 對目標 [{target_domain}] 啟動媒體播放器擬真協定 (Range Probe)...")
+                    import uuid
+                    
+                    dynamic_headers["X-Playback-Session-Id"] = str(uuid.uuid4()).upper()
+                    dynamic_headers["Icy-MetaData"] = "1"
+                    
+                    probe_headers = dynamic_headers.copy()
+                    probe_headers["Range"] = "bytes=0-1" # 只要求前 2 個 Bytes
+                    
+                    try:
+                        probe_r = session.get(f_url, timeout=15, headers=probe_headers)
+                        probe_r.close()
+                        time.sleep(random.uniform(0.8, 2.0)) # 模擬真實 App 的停頓
+                    except Exception as probe_err:
+                        s_log_func(sb, "DOWNLOAD", "WARNING", f"⚠️ 探測階段遇阻: {probe_err}，繼續強行突破...")
+
+                # 💡 鎖死超時極限 (若為 HF 或 GITHUB 等重裝部隊，自動放寬至 300 秒)
+                # 若剛剛有執行 Probe，這裡會完美重複使用同一個 TCP 連線！
+                final_timeout = 300 if worker_id in HEAVY_ARMORS else 120
+                r = session.get(f_url, stream=True, timeout=final_timeout, headers=dynamic_headers)
+                
                 try:
                     r.raise_for_status()
                     with open(tmp_path, 'wb') as f:
-                        # 💡 3MB 分片下載，每片休息 0.5s，規避流量異常偵測
                         for chunk in r.iter_content(chunk_size=3 * 1024 * 1024): 
                             if chunk: 
                                 f.write(chunk)
                                 time.sleep(0.5) 
                 finally:
-                    # 💡 安全收尾：明確關閉連線
                     r.close()
                     
-            # 👇👇👇 往左退一格縮排，讓 Session 提早關閉釋放記憶體 👇👇👇
             s3.upload_file(tmp_path, bucket, os.path.basename(tmp_path))
-            sb.table("mission_queue").update({"scrape_status": "completed", "r2_url": os.path.basename(tmp_path)}).eq("id", m['id']).execute()
+            
+            # 💡 下載成功，將 dl_soft_failure_count 歸零以保清白
+            sb.table("mission_queue").update({"scrape_status": "completed", "r2_url": os.path.basename(tmp_path), "dl_soft_failure_count": 0}).eq("id", m['id']).execute()
             s_log_func(sb, "DOWNLOAD", "SUCCESS", f"✅ 物資入庫: {m['id'][:8]}")
             
-            downloaded_count += 1  # 👈 🚨 關鍵修補：任務完成，計數器 +1！
-            # 👆👆👆 ========================================= 👆👆👆
-            
-
+            downloaded_count += 1 
 
         except requests.exceptions.HTTPError as he:
             status_code = getattr(he.response, 'status_code', 0)
@@ -179,8 +194,20 @@ def run_logistics_engine(sb, config, now_iso, s_log_func, my_blacklist, dl_limit
                 ]).execute()
             else:
                 s_log_func(sb, "DOWNLOAD", "ERROR", f"❌ 搬運異常: {status_code}")
+                
         except Exception as e: 
-            s_log_func(sb, "DOWNLOAD", "ERROR", f"❌ 搬運失敗: {str(e)}")
+            err_str = str(e).lower()
+            # 🚀 專屬下載超時的「軟失敗」防禦網
+            if 'timeout' in err_str or 'timed out' in err_str:
+                if current_dl_fails < 1:
+                    s_log_func(sb, "DOWNLOAD", "WARNING", f"⚠️ [{worker_id}] 抓取超時(>120s)，計數+1。嫌疑犯: {prog_info}")
+                    sb.table("mission_queue").update({"dl_soft_failure_count": current_dl_fails + 1}).eq("id", m['id']).execute()
+                else:
+                    s_log_func(sb, "DOWNLOAD", "WARNING", f"⚠️ [{worker_id}] 抓取再次超時，標記為 dl_heavy_only 移交重裝。死硬派: {prog_info}")
+                    sb.table("mission_queue").update({"scrape_status": "dl_heavy_only"}).eq("id", m['id']).execute()
+            else:
+                s_log_func(sb, "DOWNLOAD", "ERROR", f"❌ 搬運失敗: {str(e)}")
         finally:
             if os.path.exists(tmp_path): os.remove(tmp_path)
             gc.collect()
+            visited_domains.add(target_domain) # 將網域加入已造訪清單
