@@ -1,16 +1,11 @@
 # ---------------------------------------------------------
-# src/pod_scra_intel_core.py v6.3 (大部隊 KOYEB 終極版：A/B/C 三段變速防禦系統)
-# 適用部隊：RENDER, KOYEB, ZEABUR
+# src/pod_scra_intel_core.py v6.4 (S-Plan 終極版：鐵壁預佔鎖與防幽靈迴圈)
+#  適用部隊：RENDER, KOYEB, ZEABUR
 # 任務：專注於 STT 與 Summary 的核心戰鬥流程。
-# [V5.9.2 更新] 1. 交由 Supabase VIEW (vw_safe_mission_queue) 過濾。 429 絕對防禦：深潛 180~300 秒並強制斷尾。
-# [V5.9.3 補齊] 第一棒與第二棒全面實裝「預佔鎖 (Pessimistic Locking)」。
-# [V5.9.5 更新] 核心連線套件全面升級為 curl_cffi，統一全軍 HTTP 引擎。
-# [V5.9.6 更新] 升級智能大腦閘門：放寬中型機甲壓縮極限至 85MB。
-# [V5.9.7 零信任] 修復軟失敗歸零邏輯，確保成功任務重獲新生，補齊缺失依賴。
-# [V6.0 重大升級] 導入 GROQ 超長訪談聽寫 (>=3MB)，並實裝 429 降級重鑄斷尾策略。
-# [V6.1] 新增去廣告濾鏡 (in_ 雙取機制) 與 FLY 防呆掛載。
-# [V6.2] 實裝 NVIDIA Plan C 終極接管，根據 soft_failure_count 自動換裝。
-# [V6.3] 超過3萬字的任務，直接找NVDIA進行摘要
+# [V6.4 重大升級] 
+# 1. 移除計分解析：拔除 parse_intel_metrics，徹底消滅 Regex 崩潰地雷。
+# 2. 絕對解耦防禦：嚴格執行「先完成入庫、後發送TG」。若TG當機，不影響任務完結，杜絕幽靈迴圈。
+# 3. 歸檔標記：TG 戰報標題強制鑲嵌 [任務ID前8碼]，精準對位 HuggingFace 歸檔庫。
 # ---------------------------------------------------------
 
 import os, time, random, gc, traceback, base64, re 
@@ -32,8 +27,8 @@ except ImportError:
 from src.pod_scra_intel_techcore import (
     fetch_stt_tasks, fetch_summary_tasks, upsert_intel_status, 
     update_intel_success, delete_intel_task, call_groq_stt, 
-    call_gemini_summary, parse_intel_metrics, send_tg_report,
-    increment_soft_failure
+    call_gemini_summary, send_tg_report, increment_soft_failure
+    # 💡 已移除 parse_intel_metrics
 )
 
 
@@ -46,7 +41,7 @@ def run_audio_to_stt_mission(sb=None):
     panel = get_tactical_panel(worker_id)
     
     if panel["STT_LIMIT"] <= 0:
-        print(f"⏸️ [{worker_id}] 面板指示：不參與 STT 轉譯產線。")
+        print(f"⏸️ [{worker_id}] 面板(control.py)設定<=0：不參與 STT 轉譯產線。")
         return
 
     time.sleep(random.uniform(3.0, 8.0))
@@ -213,8 +208,9 @@ def run_audio_to_stt_mission(sb=None):
         finally:
             gc.collect()
 
+
 # =========================================================
-# ✍️ 第二棒：STT to Summary (三段變速版)
+# ✍️ 第二棒：STT to Summary (V6.4 安全解耦防禦)
 # =========================================================
 def run_stt_to_summary_mission(sb=None):
     start_time = time.time()
@@ -276,14 +272,12 @@ def run_stt_to_summary_mission(sb=None):
             target_r2_url = q_data.get('r2_url')
             
             if is_text_transcript:
-                # 🛡️ 啟োট純文字防禦網：掛載資料庫抓取的「去廣告與來賓標示濾鏡」
+                # 🛡️ 啟動純文字防禦網：掛載資料庫抓取的「去廣告濾鏡」
                 gemini_prompt = sys_prompt + f"\n\n{anti_ad_prompt}\n\n【純文字逐字稿】\n{intel.get('stt_text', '')}"
                 target_r2_url = None # 阻斷音檔傳遞
             else:
                 # 🎙️ 原生音訊流：以簡潔指令引導原生多模態過濾廣告
                 gemini_prompt = sys_prompt + "\n\n【系統提示】以下提供的是原始音檔。請仔細聆聽並運用邏輯判斷力，自動將「贊助商廣告、產品推銷」等干擾資訊過濾掉，根據指示提取摘要。"
-
-
 
             # ---------------------------------------------------------
             # 🛡️ [核心決策] 根據失敗次數與「文本長度」決定摘要執行方案
@@ -291,19 +285,19 @@ def run_stt_to_summary_mission(sb=None):
             stt_content = intel.get('stt_text', '')
             stt_len = len(stt_content) if stt_content else 0
             
-            current_active_provider = "" # 👈 建立紀錄變數 (每次迴圈皆會重置，極度安全)
+            current_active_provider = "" 
 
             # 🚀 條件：失敗 2 次以上，或者字數超過 3 萬字 (直接規避 GROQ 死亡輪迴與 GEMINI 429)
             if current_fails >= 2 or stt_len > 30000:
                 print(f"🚀 [{worker_id}] [C 方案] 觸發重裝條件 (失敗: {current_fails}, 字數: {stt_len})，啟動 NVIDIA 終極摘要產線...")
                 nv_agent = NvidiaAgent()
                 summary = nv_agent.call_nvidia_summary(stt_content, sys_prompt)
-                current_active_provider = "NVIDIA" # 👈 標記
+                current_active_provider = "NVIDIA" 
             else:
                 try:
                     print(f"🚀 [{worker_id}] [A 方案] 優先呼叫 GEMINI 執行摘要 (字數: {stt_len})...")
                     summary = call_gemini_summary(s, target_r2_url, gemini_prompt)
-                    current_active_provider = "GEMINI" # 👈 標記
+                    current_active_provider = "GEMINI" 
                     
                 except Exception as gemini_err:
                     print(f"⚠️ [{worker_id}] GEMINI 摘要遭遇阻礙 ({str(gemini_err)[:50]})...")
@@ -313,19 +307,34 @@ def run_stt_to_summary_mission(sb=None):
                         print(f"🛡️ [{worker_id}] [B 方案] 啟動 GROQ 備援摘要產線 (字數: {stt_len})...")
                         groq_agent = GroqFallbackAgent()
                         summary = groq_agent.generate_summary(stt_content, sys_prompt)
-                        current_active_provider = "GROQ" # 👈 標記
+                        current_active_provider = "GROQ" 
                     else:
                         raise gemini_err
             
             if summary:
-                metrics = parse_intel_metrics(summary)
-                # 🚀 呼叫發報時，帶入這個 current_active_provider 變數
-                send_tg_report(s, q_data.get('source_name', '未知'), q_data.get('episode_title', '未知'), summary, sb, worker_id, provider=current_active_provider)
+                # 🔐 1. 絕對解耦：先完成入庫鎖定勝局 (強制給分 0)
+                print(f"💾 [{worker_id}] 執行先遣部隊入庫作業，確保珍貴摘要資料不流失...")
+                update_intel_success(sb, task_id, summary, 0)
                 
-                # 任務成功歸 0
-                sb.table("mission_queue").update({"soft_failure_count": 0}).eq("id", task_id).execute()
-                update_intel_success(sb, task_id, summary, metrics["score"])
-                print(f"🎉 [{worker_id}] 戰報發送成功，摘要已安全結案！")
+                sb.table("mission_queue").update({
+                    "soft_failure_count": 0, 
+                    "scrape_status": "completed"
+                }).eq("id", task_id).execute()
+                print(f"✅ [{worker_id}] 摘要入庫完成，資料庫狀態已結案！")
+
+                # 📢 2. 後端推播：嘗試發送 Telegram (加入 HF_ID 標記)
+                try:
+                    short_id = task_id[:8]
+                    # 💡 標題強制鑲嵌 [任務ID前8碼]
+                    display_title = f"[{short_id}] {q_data.get('episode_title', '未知')}"
+                    
+                    print(f"📨 [{worker_id}] 準備空投戰報至 Telegram...")
+                    send_tg_report(s, q_data.get('source_name', '未知'), display_title, summary, sb, worker_id, provider=current_active_provider)
+                    print(f"🎉 [{worker_id}] Telegram 戰報空投成功！")
+                except Exception as tg_e:
+                    # TG 發送失敗只印警告，絕不觸發退回重試
+                    print(f"⚠️ [{worker_id}] Telegram 戰報空投失敗，但資料庫已安全結案。錯誤: {tg_e}")
+                
                 actual_processed += 1 
 
         except Exception as e:
@@ -335,23 +344,23 @@ def run_stt_to_summary_mission(sb=None):
             if '429' in err_str or 'quota' in err_str.lower() or 'rate_limit' in err_str.lower(): 
                 print(f"🔄 [{worker_id}] 遭遇限流，執行斷尾防禦...")
                 
-                # 🚀 [降級重鑄戰術] 如果是舊版 GEMINI 原生音訊任務導致 429，將其退回第一棒 (pending) 重新交由 GROQ 聽寫
+                # 🚀 [降級重鑄戰術] 如果是舊版 GEMINI 原生音訊任務導致 429，退回第一棒
                 if provider == "GEMINI" and not is_text_transcript:
-                    print(f"⚔️ [{worker_id}] 偵測到舊版高負載任務，啟動降級重鑄 ➡️ 退回第一棒重新由 GROQ 聽寫...")
+                    print(f"⚔️ [{worker_id}] 偵測到原生流限流，降級重鑄 ➡️ 退回第一棒重新聽寫...")
                     delete_intel_task(sb, task_id)
                     sb.table("mission_queue").update({
                         "scrape_status": "pending", 
-                        "soft_failure_count": current_fails # 💡 保持當前失敗次數，讓系統下次能觸發備援
+                        "soft_failure_count": current_fails 
                     }).eq("id", task_id).execute()
                 else:
-                    # 純文字任務被限流，保留狀態等下次
+                    print(f"🔄 [{worker_id}] 任務限流，解除預佔鎖，退回 Sum.-pre 等待下次重試。")
                     upsert_intel_status(sb, task_id, "Sum.-pre", provider)
                     sb.table("mission_queue").update({"soft_failure_count": current_fails}).eq("id", task_id).execute()
 
                 penalty_delay = random.uniform(180.0, 300.0)
-                print(f"⚠️ [{worker_id}] 摘要 API 枯竭！強制深潛 {penalty_delay:.1f} 秒，本輪強制收隊！")
+                print(f"⚠️ [{worker_id}] 摘要 API 枯竭！強制深潛 {penalty_delay:.1f} 秒！")
                 time.sleep(penalty_delay)
-                break # 🛑 斷尾求生
+                break 
             
             elif '404' in err_str and 'Not Found' in err_str:
                 print(f"🕳️ [{worker_id}] 踩到 404 炸彈！抹除紀錄退回物流。")
@@ -359,7 +368,10 @@ def run_stt_to_summary_mission(sb=None):
                 sb.table("mission_queue").update({"r2_url": None, "scrape_status": "pending"}).eq("id", task_id).execute()
             
             else:
-                print(f"🔄 [{worker_id}] 任務異常，保留失敗標記，等待下次重試。")
+                # 🛡️ [防禦機制：解鎖] 捕捉到未知崩潰，強制將任務退回 Sum.-pre，防止殭屍鎖
+                print(f"🔄 [{worker_id}] 發生未知崩潰，解除預佔鎖，退回 Sum.-pre 等待下次重試。")
+                upsert_intel_status(sb, task_id, "Sum.-pre", provider)
+                sb.table("mission_queue").update({"soft_failure_count": current_fails}).eq("id", task_id).execute()
         
         finally:
             gc.collect()
