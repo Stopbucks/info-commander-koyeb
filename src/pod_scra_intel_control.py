@@ -52,7 +52,7 @@ def get_tactical_panel(worker_id):
         "COMPRESS_ONLY": False,
         "SCOUT_MODE": False,
         "MAX_TICKS": 4,               # ⏱️ 主力：4 個檔次 (KOYEB 專屬 3 小時起床 1 次進貨與轉譯/摘要輪替)
-        "IDLE_GEARBOX": 4.0           # ⚙️ 隱蔽變速箱：非值勤時的巡邏降速齒輪
+        "IDLE_GEARBOX": 2.0           # ⚙️ 隱蔽變速箱：非值勤時的巡邏降速齒輪_0507:4檔 -> 2檔
     }
 
     # 🚜 3. 重裝巨獸模板 (適用於 DBOS 等高效能節點，專解疑難雜症)
