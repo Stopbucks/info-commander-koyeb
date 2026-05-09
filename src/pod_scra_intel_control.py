@@ -55,11 +55,11 @@ def get_tactical_panel(worker_id):
         "GLOBAL_DOMAIN_BLACKLIST": base_blacklist 
     }
 
-    # 🛡️ 2. 中型主力模板
+    # 🛡️ 2. 中型主力模板  _  KOYEB
     medium_panel = {
         "MEM_TIER": 512,
         "RADAR_FETCH_LIMIT": 100,
-        "DOWNLOAD_LIMIT": 2,           # 📥 總下載配額
+        "DOWNLOAD_LIMIT": 3,           # 📥 總下載配額
         "MAX_SAME_DOMAIN": 1,          # 🛡️ 同網域安全併發數。例如總下載2個，每個網域最多1個
         "STT_LIMIT": 3,
         "SUMMARY_LIMIT": 2,
