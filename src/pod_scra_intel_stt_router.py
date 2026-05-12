@@ -1,7 +1,7 @@
 # ---------------------------------------------------------
 # 程式碼：src/pod_scra_intel_stt_router.py (V6.12  感知路由_CF 版)
 # 職責：專職處理 STT 聽寫任務的 5 階段輪詢與 API 呼叫。
-# 戰術順序：Groq -> Gladia -> Speechmatics -> AssemblyAI -> Deepgram
+# 戰術順序：Groq -> CF --> Gladia -> Speechmatics -> AssemblyAI -> Deepgram
 # 記憶體防護：實作「閱後即焚」，單次下載後上傳即釋放二進位記憶體。
 # [V6.10 重大突破] 實裝微型機甲防護網：FLY_LAX / ALWAYSDATA 遇到 >= 8MB 檔案，
 # 自動跳過需消耗記憶體的 Groq，直接進入零記憶體消耗的 URL 輪詢！
