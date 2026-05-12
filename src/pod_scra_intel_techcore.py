@@ -176,3 +176,21 @@ def send_tg_report(secrets, source, title, summary, task_id, sb=None, worker_id=
             try: sb.table("pod_scra_log").insert({"worker_id": worker_id, "task_type": "TG_REPORT", "status": "ERROR", "message": f"TG 發報失敗 | ID: {short_id} | Err: {str(e)[:50]}"}).execute()
             except: pass 
         return False
+
+
+def log_system_error(sb, worker_id, source, action, err_msg):
+    # 專責將系統異常寫入 Supabase，僅捕捉嚴重錯誤以保護資料庫負載
+    if not sb: return
+    try:
+        # 強制截斷錯誤訊息長度，避免超大 Payload 塞爆資料庫欄位
+        safe_err_msg = str(err_msg)[:250]
+        sb.table("pod_scra_log").insert({
+            "worker_id": worker_id,
+            "task_type": source,
+            "status": "ERROR",
+            "message": f"[{action}] 異常: {safe_err_msg}"
+        }).execute()
+        print(f"📝 [{worker_id}] [S_LOG 紀錄成功] 致命錯誤已同步至 Supabase")
+    except Exception as e:
+        print(f"⚠️ [{worker_id}] [S_LOG 寫入失敗] 無法連線資料庫: {str(e)[:50]}")
+
