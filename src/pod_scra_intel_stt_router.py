@@ -5,7 +5,11 @@
 # 記憶體防護：實作「閱後即焚」，單次下載後上傳即釋放二進位記憶體。
 # [V6.10 重大突破] 實裝微型機甲防護網：FLY_LAX / ALWAYSDATA 遇到 >= 8MB 檔案，
 # 自動跳過需消耗記憶體的 Groq，直接進入零記憶體消耗的 URL 輪詢！
+# --------------------------------------------------------
+# [S_LOG 守則] 未來若新增 log_system_error，請務必放置於「最外層的 except 區塊」。
+# [防禦機制] 嚴禁置於 Retry 迴圈或高頻輪詢內，以防 API 崩潰時無限觸發寫入，導致資料庫超載。
 # ---------------------------------------------------------
+
 import os, gc, time, json
 import httpx 
 from curl_cffi import requests 
@@ -226,12 +230,24 @@ def execute_stt_routing(sb, r2_url_path, file_size_mb=0):
     # -----------------------------------------------------
     # 🚀 資源感知路由：決定是否跳過需要記憶體的 Groq
     # -----------------------------------------------------
+
+
     skip_groq = False
+    
+    # 防護一：微型機甲 (Fly.io 等) 記憶體防護 (大於 8MB 放棄 Groq)
     if worker_id in ["FLY_LAX", "ALWAYSDATA"] and file_size_mb >= 8.0:
         skip_groq = True
-        print(f"🛡️ [STT Router] 微型機甲記憶體防護啟動！檔案達 {file_size_mb}MB，跳過 Groq 避免 OOM，直接進入 URL 輪詢。")
-        all_errors.append("Groq:SKIPPED_DUE_TO_OOM_RISK")
+        print(f"🛡️ [STT Router] 微型機甲記憶體防護啟動！檔案達 {file_size_mb}MB，跳過 Groq 避免 OOM。")
+        all_errors.append("Groq:SKIPPED_DUE_TO_OOM")
         
+    # 防護二：Groq 官方 API 天花板防護 (大於 24.5MB 放棄 Groq，避免 HTTP 413 錯誤)
+    elif file_size_mb >= 24.5:
+        skip_groq = True
+        print(f"🛡️ [STT Router] 檔案達 {file_size_mb}MB 逼近 Groq 25MB 極限，啟動迴避，交棒 URL 輪詢！")
+        all_errors.append("Groq:SKIPPED_OVER_25MB")
+        
+
+   
     if not skip_groq:
         print(f"📥 [STT Router] 下載物資供 Groq 使用: {filename}...")
         try:
