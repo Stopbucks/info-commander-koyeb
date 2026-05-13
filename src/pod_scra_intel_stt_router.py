@@ -1,13 +1,13 @@
 
 # ---------------------------------------------------------
-# 程式碼：src/pod_scra_intel_stt_router.py (V6.14 精銳整編版)
+# 程式碼：src/pod_scra_intel_stt_router.py (V6.15 精銳整編版)
 # 職責：專職處理 STT 聽寫任務的 5 階段輪詢與 API 呼叫。
 # 戰術順序：Groq -> Gladia -> Speechmatics -> AssemblyAI -> Deepgram
 # [V6.14 重大更新] 
 # 1. 移除 Cloudflare 模組 (因 API 嚴格的 413 長度限制，不適用於 Podcast)。
 # 2. 修復 Speechmatics 參數格式，符合官方 V2 最新 config 巢狀要求。
 # 3. 確立 24.5MB 輕重型任務分流點，極限壓榨 Groq 免費算力。
-#  Gladia -> 每月重置 10 小時 Speechmatics -> 每月重置 8 小時
+#  Gladia -> 每月重置 10 小時(有2組) Speechmatics -> 每月重置 8 小時
 #  AssemblyAI ->每月提供約 5 小時(總額度免費一次使用) Deepgram(一次性 200 美元)
 # ---------------------------------------------------------
 # [S_LOG 守則] 未來若新增 log_system_error，請務必放置於「最外層的 except 區塊」。
@@ -23,9 +23,14 @@ from datetime import datetime, timezone
 # 🛡️ 戰術控制與基礎模組
 # =========================================================
 def get_stt_secrets():
+    # 🚀 [V6.15] 讀取 Gladia 矩陣金鑰 (支援以逗號分隔的多組 Key)
+    # 如果您有舊的 GLADIA_API_KEY 變數，它也能相容讀取
+    raw_gladia = os.environ.get("GLADIA_API_KEYS", os.environ.get("GLADIA_API_KEY", ""))
+    gladia_keys = [k.strip() for k in raw_gladia.split(",") if k.strip()]
+
     return {
         "GROQ_KEY": os.environ.get("GROQ_API_KEY", os.environ.get("GROQ_KEY")),
-        "GLADIA_KEY": os.environ.get("GLADIA_API_KEY"),
+        "GLADIA_KEYS": gladia_keys,  # 變成陣列 (List)
         "SPEECHMATICS_KEY": os.environ.get("SPEECHMATICS_API_KEY"),
         "ASSEMBLYAI_KEY": os.environ.get("ASSEMBLYAI_API_KEY"),
         "DEEPGRAM_KEY": os.environ.get("DEEPGRAM_API_KEY"),
@@ -285,22 +290,41 @@ def execute_stt_routing(sb, r2_url_path, file_size_mb=0):
             except Exception as e:
                 all_errors.append(f"Light_Zone_DL_FAIL:{str(e)[:30]}")
 
-    # -----------------------------------------------------
+# -----------------------------------------------------
     # 🛡️ 階段二：重型任務區 (處理 >24.5MB 或 Groq 掉棒任務)
     # -----------------------------------------------------
     if not stt_text:
         print(f"🛡️ [STT Router] 進入 URL 降維輪詢區 (重型/備援)...")
         
-        # Plan C: Gladia
-        stt_text, status = _call_gladia(s['GLADIA_KEY'], url, sb)
-        if status == "SUCCESS" and stt_text: return stt_text, "GLADIA", all_errors
-        all_errors.append(f"Gladia:{status}")
-        
-        # Plan D: Speechmatics
-        stt_text, status = _call_speechmatics(s['SPEECHMATICS_KEY'], url, sb)
-        if status == "SUCCESS" and stt_text: return stt_text, "SPEECHMATICS", all_errors
-        all_errors.append(f"Speechmatics:{status}")
-        
+        # 🚀 [V6.15] Plan C: Gladia (多帳號矩陣輪詢)
+        if s['GLADIA_KEYS']:
+            for idx, g_key in enumerate(s['GLADIA_KEYS']):
+                print(f"🎯 [Plan C] 呼叫 Gladia 聽寫 (切換彈匣 {idx+1}/{len(s['GLADIA_KEYS'])})...")
+                stt_text, status = _call_gladia(g_key, url, sb)
+                
+                if status == "SUCCESS" and stt_text: 
+                    # 打擊成功，直接跳出並回傳
+                    return stt_text, "GLADIA", all_errors
+                
+                # 紀錄該帳號的失敗原因
+                all_errors.append(f"Gladia_Acc{idx+1}:{status}")
+                
+                # 🧠 戰術優化：判斷是否需要換帳號
+                if "QUOTA_HIT" not in status:
+                    # 如果不是因為「沒錢(402,429)」失敗，代表是音檔有問題或主機當機
+                    # 換帳號也沒用，為了省時間直接 break 跳出 Gladia 陣列，交棒給 Speechmatics
+                    break 
+        else:
+            all_errors.append("Gladia:NO_API_KEYS_CONFIGURED")
+
+        # Plan D: Speechmatics (如果 Gladia 矩陣全數陣亡，則輪到它)
+        if not stt_text:
+            stt_text, status = _call_speechmatics(s['SPEECHMATICS_KEY'], url, sb)
+            if status == "SUCCESS" and stt_text: return stt_text, "SPEECHMATICS", all_errors
+            all_errors.append(f"Speechmatics:{status}")
+            
+
+
         # Plan E/F: 滴流管制最終防線
         for provider in ["assemblyai", "deepgram"]:
             if check_and_update_quota(sb, provider):
