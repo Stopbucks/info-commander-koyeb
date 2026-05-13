@@ -1,13 +1,15 @@
+
 # ---------------------------------------------------------
-# 程式碼：src/pod_scra_intel_stt_router.py (V6.12  感知路由_CF 版)
+# 程式碼：src/pod_scra_intel_stt_router.py (V6.14 精銳整編版)
 # 職責：專職處理 STT 聽寫任務的 5 階段輪詢與 API 呼叫。
-# 戰術順序：Groq -> CF --> Gladia -> Speechmatics -> AssemblyAI -> Deepgram
-# 記憶體防護：實作「閱後即焚」，單次下載後上傳即釋放二進位記憶體。
-# [V6.10 重大突破] 實裝微型機甲防護網：FLY_LAX / ALWAYSDATA 遇到 >= 8MB 檔案，
-# 自動跳過需消耗記憶體的 Groq，直接進入零記憶體消耗的 URL 輪詢！
-# [V6.12] 新增 CF 聽寫功能 每日單檔消耗：60 秒 × 14 神經元/秒 = 840 神經元 
-#               每日總消耗：4 檔 × 840 神經元 = 3,360 神經元 / 天(約一半額度，觀察一個月至0612)
-# --------------------------------------------------------
+# 戰術順序：Groq -> Gladia -> Speechmatics -> AssemblyAI -> Deepgram
+# [V6.14 重大更新] 
+# 1. 移除 Cloudflare 模組 (因 API 嚴格的 413 長度限制，不適用於 Podcast)。
+# 2. 修復 Speechmatics 參數格式，符合官方 V2 最新 config 巢狀要求。
+# 3. 確立 24.5MB 輕重型任務分流點，極限壓榨 Groq 免費算力。
+#  Gladia -> 每月重置 10 小時 Speechmatics -> 每月重置 8 小時
+#  AssemblyAI ->每月提供約 5 小時(總額度免費一次使用) Deepgram(一次性 200 美元)
+# ---------------------------------------------------------
 # [S_LOG 守則] 未來若新增 log_system_error，請務必放置於「最外層的 except 區塊」。
 # [防禦機制] 嚴禁置於 Retry 迴圈或高頻輪詢內，以防 API 崩潰時無限觸發寫入，導致資料庫超載。
 # ---------------------------------------------------------
@@ -27,11 +29,6 @@ def get_stt_secrets():
         "SPEECHMATICS_KEY": os.environ.get("SPEECHMATICS_API_KEY"),
         "ASSEMBLYAI_KEY": os.environ.get("ASSEMBLYAI_API_KEY"),
         "DEEPGRAM_KEY": os.environ.get("DEEPGRAM_API_KEY"),
-        
-        # 🚀 [V6.12 新增] Cloudflare 算力金鑰與帳戶 ID
-        "CLOUDFLARE_API_TOKEN": os.environ.get("CLOUDFLARE_API_TOKEN"),
-        "CLOUDFLARE_ACCOUNT_ID": os.environ.get("CLOUDFLARE_ACCOUNT_ID"),
-        
         "R2_URL": (os.environ.get("R2_PUBLIC_URL") or "").rstrip('/')
     }
 
@@ -65,47 +62,37 @@ def check_and_update_quota(sb, provider_name):
         
         provider_data = quota_dict[provider_name]
         
-        # 🚀 [新增] Cloudflare 專用：每日重置邏輯
-        if provider_name == "cloudflare_ai":
+        # 🚀 [保留機制] 每日重置邏輯 (未來若有其他日配額服務可直接套用)
+        if provider_data.get("limit_per_day") is not None:
             current_date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            
-            # 如果日期不同，代表跨日了，重置計數器
             if provider_data.get("date") != current_date_str:
                 provider_data["date"] = current_date_str
                 provider_data["count"] = 0
-                
-            limit = provider_data.get("limit_per_day", 5) # 預設每天 5 次
-            
+            limit = provider_data.get("limit_per_day", 5) 
             if provider_data["count"] >= limit:
-                print(f"⚠️ [{provider_name}] 今日額度已達安全上限 ({limit}次)，鎖定開火。")
+                print(f"⚠️ [{provider_name}] 今日額度已達上限 ({limit}次)，拒絕開火。")
                 return False
-                
             provider_data["count"] += 1
             print(f"🔓 [{provider_name}] 額度放行 (今日使用: {provider_data['count']}/{limit})")
             
-        # 🛡️ 其他服務 (AssemblyAI, Deepgram)：每週重置邏輯
+        # 🛡️ 預設機制：每週重置邏輯 (AssemblyAI, Deepgram)
         else:
             current_week = get_current_week()
-            
-            # 如果週數不同，代表跨週了，重置計數器
             if provider_data.get("week") != current_week:
                 provider_data["week"] = current_week
                 provider_data["count"] = 0
-                
             limit = provider_data.get("limit_per_week", 2)
-            
             if provider_data["count"] >= limit:
                 print(f"⚠️ [{provider_name}] 本週額度已達上限 ({limit}次)，拒絕開火。")
                 return False
-                
             provider_data["count"] += 1
             print(f"🔓 [{provider_name}] 額度放行 (本週使用: {provider_data['count']}/{limit})")
             
         # 💾 更新資料庫
         quota_dict[provider_name] = provider_data
         sb.table("pod_scra_metadata").update({"dictionary": quota_dict}).eq("key_name", "STT_QUOTA_PACING").execute()
-        
         return True
+        
     except Exception as e:
         print(f"⚠️ 配額檢查失敗: {e}")
         return False
@@ -171,9 +158,22 @@ def _call_speechmatics(api_key, audio_url, sb=None):
     try:
         url = "https://asr.api.speechmatics.com/v2/jobs"
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        payload = {"type": "transcription", "fetch_data": {"url": audio_url}, "transcription_config": {"operating_point": "enhanced", "language": "en"}}
+        
+        # 🚀 [V6.14 修復] 嚴格遵守 Speechmatics V2 巢狀參數格式
+        payload = {
+            "type": "transcription", 
+            "fetch_data": {"url": audio_url}, 
+            "config": {
+                "type": "transcription",
+                "transcription_config": {
+                    "operating_point": "enhanced", 
+                    "language": "en"
+                }
+            }
+        }
         
         resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        
         if resp.status_code in [401, 402, 403, 429]:
             log_quota_exhaustion(sb, "Speechmatics", resp.status_code, resp.text)
             return None, f"SPEECHMATICS_QUOTA_HIT_{resp.status_code}"
@@ -246,39 +246,8 @@ def _call_deepgram(api_key, audio_url):
         return None, f"DEEPGRAM_EXCEPTION_{str(e)[:50]}"
 
 
-
-def _call_cloudflare_stt(secrets, audio_data):
-    """
-    🎯 [Plan E] 呼叫 Cloudflare Workers AI (Whisper)
-    使用 Account ID 與 API Token 直接對接 Cloudflare 算力池。
-    """
-    account_id = secrets.get("CLOUDFLARE_ACCOUNT_ID")
-    api_token = secrets.get("CLOUDFLARE_API_TOKEN")
-    
-    if not account_id or not api_token: return None, "NO_CF_CREDENTIALS"
-    
-    # Cloudflare Whisper 官方模型端點
-    url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/openai/whisper"
-    headers = {"Authorization": f"Bearer {api_token}"}
-    
-    print("🎯 [Plan E] 呼叫 Cloudflare Workers AI 聽寫...")
-    try:
-        # Cloudflare 接受二進位音檔直接 Post
-        resp = requests.post(url, headers=headers, data=audio_data, timeout=300)
-        
-        if resp.status_code == 200:
-            result = resp.json()
-            if result.get("success"):
-                return result["result"].get("text", "CF_EMPTY_TEXT"), "SUCCESS"
-            else:
-                return None, f"CF_API_ERROR: {result.get('errors')}"
-        else:
-            return None, f"CF_HTTP_{resp.status_code}"
-    except Exception as e:
-        return None, f"CF_EXCEPTION_{str(e)[:50]}"
-
 # =========================================================
-# ⚙️ STT 火力協調中心主入口 (The Router V6.13)
+# ⚙️ STT 火力協調中心主入口 (The Router V6.14)
 # =========================================================
 def execute_stt_routing(sb, r2_url_path, file_size_mb=0):
     s = get_stt_secrets()
@@ -291,13 +260,12 @@ def execute_stt_routing(sb, r2_url_path, file_size_mb=0):
     all_errors = []
     
     # -----------------------------------------------------
-    # 🚀 階段一：輕型任務區 (處理 24.5MB 以下，追求免費與極速)
+    # 🚀 階段一：輕型任務區 (處理 24.5MB 以下，極限壓榨 Groq)
     # -----------------------------------------------------
     if file_size_mb < 24.5:
-        # 1. Groq (首選主力 - 絕對記憶體保護)
         skip_groq = (worker_id in ["FLY_LAX", "ALWAYSDATA"] and file_size_mb >= 8.0)
         if not skip_groq:
-            print(f"📥 [STT Router] 下載物資供 Groq/CF 使用: {filename}...")
+            print(f"📥 [STT Router] 下載物資供 Groq 使用: {filename}...")
             try:
                 resp = requests.get(url, timeout=60)
                 resp.raise_for_status()
@@ -305,28 +273,20 @@ def execute_stt_routing(sb, r2_url_path, file_size_mb=0):
                 
                 # 第一順位：Groq
                 stt_text, status = _call_groq(s['GROQ_KEY'], audio_data, filename, m_type)
+                
+                # 💥 不管成功或失敗，立刻銷毀二進位檔案
+                del audio_data; gc.collect()
+                print("🧹 [STT Router] 本地音檔已焚毀，釋放記憶體。")
+                
                 if status == "SUCCESS" and stt_text:
-                    del audio_data; gc.collect()
                     return stt_text, "GROQ", all_errors
                 all_errors.append(f"Groq:{status}")
                 
-                # 第二順位：Cloudflare (僅在輕型任務且 Groq 失敗時，受額度安全鎖保護)
-                if check_and_update_quota(sb, "cloudflare_ai"):
-                    stt_text, status = _call_cloudflare_stt(s, audio_data)
-                    if status == "SUCCESS" and stt_text:
-                        del audio_data; gc.collect()
-                        return stt_text, "CLOUDFLARE", all_errors
-                    all_errors.append(f"Cloudflare:{status}")
-                else:
-                    all_errors.append("Cloudflare:SAFE_LOCK_ACTIVATED")
-                
-                del audio_data; gc.collect()
-                print("🧹 [STT Router] 本地音檔已焚毀，釋放記憶體。")
             except Exception as e:
                 all_errors.append(f"Light_Zone_DL_FAIL:{str(e)[:30]}")
 
     # -----------------------------------------------------
-    # 🛡️ 階段二：重型任務區 (處理 >24.5MB 或輕型區掉棒任務)
+    # 🛡️ 階段二：重型任務區 (處理 >24.5MB 或 Groq 掉棒任務)
     # -----------------------------------------------------
     if not stt_text:
         print(f"🛡️ [STT Router] 進入 URL 降維輪詢區 (重型/備援)...")
@@ -341,7 +301,7 @@ def execute_stt_routing(sb, r2_url_path, file_size_mb=0):
         if status == "SUCCESS" and stt_text: return stt_text, "SPEECHMATICS", all_errors
         all_errors.append(f"Speechmatics:{status}")
         
-        # Plan F/G: 滴流管制最終防線
+        # Plan E/F: 滴流管制最終防線
         for provider in ["assemblyai", "deepgram"]:
             if check_and_update_quota(sb, provider):
                 if provider == "assemblyai": stt_text, status = _call_assemblyai(s['ASSEMBLYAI_KEY'], url)
