@@ -1,6 +1,6 @@
 
 # ---------------------------------------------------------
-# 程式碼：src/pod_scra_intel_stt_router.py (V6.15 精銳整編版)
+# src/pod_scra_intel_stt_router.py (V6.16 GROQ 局部更新版)
 # 職責：專職處理 STT 聽寫任務的 5 階段輪詢與 API 呼叫。
 # 戰術順序：Groq -> Gladia -> Speechmatics -> AssemblyAI -> Deepgram
 # [V6.14 重大更新] 
@@ -13,7 +13,7 @@
 # [S_LOG 守則] 未來若新增 log_system_error，請務必放置於「最外層的 except 區塊」。
 # [防禦機制] 嚴禁置於 Retry 迴圈或高頻輪詢內，以防 API 崩潰時無限觸發寫入，導致資料庫超載。
 # ---------------------------------------------------------
-
+#
 import os, gc, time, json
 import httpx 
 from curl_cffi import requests 
@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 # =========================================================
 def get_stt_secrets():
     # 🚀 [V6.15] 讀取 Gladia 矩陣金鑰 (支援以逗號分隔的多組 Key)
-    # 如果您有舊的 GLADIA_API_KEY 變數，它也能相容讀取
+    # 如果有舊的 GLADIA_API_KEY 變數，它也能相容讀取
     raw_gladia = os.environ.get("GLADIA_API_KEYS", os.environ.get("GLADIA_API_KEY", ""))
     gladia_keys = [k.strip() for k in raw_gladia.split(",") if k.strip()]
 
@@ -105,22 +105,57 @@ def check_and_update_quota(sb, provider_name):
 # =========================================================
 # 🎤 獨立 STT API 呼叫模組
 # =========================================================
+# ---------------------------------------------------------
+# 🎯 此版本已實裝 Groq 雙核防爆輪詢機制 (與 GHA 同步)
+# ---------------------------------------------------------
 
 def _call_groq(api_key, audio_data, filename, mime_type):
+    """執行 Groq STT 聽寫，具備雙核模型自動降級功能"""
     if not api_key: return None, "NO_API_KEY"
     print("🎯 [Plan B] 呼叫 Groq 聽寫...")
-    try:
-        headers = {"Authorization": f"Bearer {api_key}"}
-        files = {'file': (filename, audio_data, mime_type)}
-        data = {'model': 'whisper-large-v3', 'response_format': 'text', 'language': 'en'}
-        
-        with httpx.Client(timeout=180.0) as client:
-            resp = client.post("https://api.groq.com/openai/v1/audio/transcriptions", headers=headers, files=files, data=data)
-        
-        if resp.status_code == 200: return resp.text, "SUCCESS"
-        return None, f"GROQ_HTTP_{resp.status_code}_{resp.text[:50]}"
-    except Exception as e:
-        return None, f"GROQ_EXCEPTION_{str(e)[:50]}"
+    
+    # 🚀 [V6.16 穩固雙核版] 
+    # 首選極速 Turbo，限流時降級至原版 Whisper-V3 進行穩定輸出。
+    groq_stt_models = [
+        "whisper-large-v3-turbo", 
+        "whisper-large-v3"
+    ]
+    
+    last_error = ""
+    
+    for model_name in groq_stt_models:
+        try:
+            print(f"   ↳ 嘗試裝載聽打模型: {model_name}...")
+            headers = {"Authorization": f"Bearer {api_key}"}
+            files = {'file': (filename, audio_data, mime_type)}
+            data = {'model': model_name, 'response_format': 'text', 'language': 'en'}
+            
+            with httpx.Client(timeout=180.0) as client:
+                resp = client.post("https://api.groq.com/openai/v1/audio/transcriptions", headers=headers, files=files, data=data)
+            
+            if resp.status_code == 200: 
+                return resp.text, "SUCCESS"
+            
+            # 🛡️ 捕捉 429 限流或 502/503 伺服器抖動
+            elif resp.status_code in [429, 502, 503]:
+                last_error = f"GROQ_HTTP_{resp.status_code}_{resp.text[:50]}"
+                print(f"   ⚠️ 模型 {model_name} 暫時無法連線或限流 (HTTP {resp.status_code})。")
+                print("   ⏳ 進入 10 秒戰術冷卻，準備切換下一順位...")
+                time.sleep(10) # 讓 Groq 的 Token 桶稍微恢復
+                continue
+            else:
+                # 發生 400 (Bad Request) 等不可恢復錯誤，直接報錯不浪費時間
+                return None, f"GROQ_HTTP_{resp.status_code}_{resp.text[:50]}"
+                
+        except Exception as e:
+            last_error = f"GROQ_EXC_{str(e)[:50]}"
+            print(f"   ❌ 模型 {model_name} 通訊崩潰，嘗試備援...")
+            continue
+            
+    # 如果兩個模型都失敗，回傳最後的錯誤訊息
+    return None, last_error
+
+
 
 def _call_gladia(api_key, audio_url, sb=None):
     if not api_key: return None, "NO_API_KEY"
