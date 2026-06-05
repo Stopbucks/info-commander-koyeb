@@ -1,5 +1,5 @@
 # ---------------------------------------------------------
-# app.py (V6.0 KOYEB 零成本刺客專用版 + 掛載 GROQ 長訪談任務)
+# app.py (V6.1 KOYEB 零成本刺客專用版 + 掛載 GROQ 長訪談任務)
 # 適用：僅限 KOYEB 獨立倉庫
 # [工作流程]
 # 1. 由外部 Cron-job A (XX:58) 打 API 喚醒 KOYEB 容器。
@@ -8,8 +8,10 @@
 # [修正] 拔除 BackgroundScheduler，完全交由外部驅動與自我毀滅。
 # [2026_0401] 觀察測試1個月，每5小時醒來1次
 # [新增] V6.0 移除沙盒模組，正式將 GROQ 長訪談 STT 轉譯納入主線流程。
+# [新增] V6.1 from curl_cffi import requests
 # ---------------------------------------------------------
-import os, time, gc, random, threading, requests
+import os, time, gc, random, threading
+from curl_cffi import requests # 全面換裝：導入 curl_cffi 的 requests 模組，統一全軍連線引擎
 from datetime import datetime, timezone
 from flask import Flask, request
 from supabase import create_client
